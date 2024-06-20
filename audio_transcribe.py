@@ -2,10 +2,8 @@ import numpy as np
 import argparse
 import sys
 import aria.sdk as aria
-import wave
-import io
 import time
-from queue import Queue
+from queue import Queue, Empty
 import threading
 from faster_whisper import WhisperModel
 from projectaria_tools.core.sensor_data import AudioData, AudioDataRecord
@@ -43,39 +41,76 @@ def parse_args() -> argparse.Namespace:
 
 
 # Constants
-SAMPLE_RATE = 50000  # Original sample rate from live streaming
+SAMPLE_RATE = 48000  # Original sample rate from live streaming
 TARGET_SAMPLE_RATE = 16000  # Target sample rate for Whisper
 NUM_CHANNELS = 7  # Number of audio channels
-BUFFER_DURATION = 5  # Buffer duration for processing in seconds
+BUFFER_DURATION = 10  # Buffer duration for processing in seconds
+CHUNK_DURATION = 10  # Chunk duration for transcription in seconds
 
 
 # Function to handle real-time transcription
-def transcribe_audio(model, audio_queue):
+def transcribe_audio(model, audio_queue, lock):
+    CHUNK_DURATION = (
+        BUFFER_DURATION  # Define chunk duration same as buffer duration for clarity
+    )
+    target_chunk_size = int(TARGET_SAMPLE_RATE * CHUNK_DURATION)
+    print(f"Target chunk size for processing: {target_chunk_size} samples")
+
     while True:
-        if not audio_queue.empty():
+        try:
             audio_data = []
-            while not audio_queue.empty():
-                audio_data.extend(audio_queue.get())
+
+            while len(audio_data) < target_chunk_size:
+                lock.acquire()
+                try:
+                    # Calculate how much more data we need to reach the target chunk size
+                    needed_samples = target_chunk_size - len(audio_data)
+
+                    if not audio_queue.empty():
+                        # Get a chunk of audio data from the queue
+                        queue_data = audio_queue.get(timeout=1)
+                        # Check how much data we can take from this chunk
+                        chunk_data = queue_data[:needed_samples]
+
+                        # Add the chunk to our audio_data
+                        audio_data.extend(chunk_data)
+                        # print(f"Retrieved {len(chunk_data)} samples from queue.")
+                        # print(f"Current audio_data length: {len(audio_data)} samples")
+
+                        # If there are leftover samples, put them back into the queue for future processing
+                        if len(queue_data) > needed_samples:
+                            remaining_data = queue_data[needed_samples:]
+                            audio_queue.put(remaining_data)
+                            print(f"Leftover {len(remaining_data)} samples re-queued.")
+                    # else:
+                    #     print("")
+                    #     # print("Queue is empty, waiting for data...")
+                finally:
+                    lock.release()
+
+                # Sleep briefly to avoid busy waiting
+                time.sleep(0.1)
+
+            if audio_data:
+                # print(f"Processing {len(audio_data)} samples for transcription.")
+                audio_data = np.array(audio_data, dtype=np.float32)
                 # print(audio_data)
-
-            # Convert to numpy array
-            audio_data = np.array(audio_data)
-
-            # Process audio data into 5-second chunks
-            total_samples = len(audio_data)
-            chunk_samples = TARGET_SAMPLE_RATE * BUFFER_DURATION
-            num_chunks = total_samples // chunk_samples
-
-            for i in range(num_chunks):
-                chunk_start = i * chunk_samples
-                chunk_end = chunk_start + chunk_samples
-                audio_chunk = audio_data[chunk_start:chunk_end]
-
                 segments, _ = model.transcribe(audio_data, beam_size=5, language="en")
                 for segment in segments:
-                    print(f"[{segment.start:.2f} - {segment.end:.2f}]: {segment.text}")
+                    print(f"{segment.text}")
+                # with open("transcriptions.txt", "a") as f:
+                #     for segment in segments:
+                #         f.write(f"{segment.text}\n")
+                #         print(
+                #             f"[{segment.start:.2f} - {segment.end:.2f}]: {segment.text}"
+                #         )
 
-        else:
+            else:
+                print("No audio data to process.")
+
+        except Exception as e:
+            print(f"Error during transcription: {e}")
+        finally:
             time.sleep(0.1)
 
 
@@ -85,34 +120,16 @@ def process_multi_channel_audio(audio_data, num_channels):
 
     # Ensure the data length is a multiple of num_channels
     if total_samples % num_channels != 0:
-        print(
-            f"Warning: Number of audio samples ({total_samples}) is not a multiple of number of channels ({num_channels}). Truncating excess samples."
-        )
         truncated_samples = total_samples - (total_samples % num_channels)
-        truncated_data = audio_data[truncated_samples:]  # Save the truncated part
         audio_data = audio_data[:truncated_samples]
 
-        # Reshape the data into the given number of channels
-        try:
-            audio_data = audio_data.reshape(-1, num_channels)
-        except ValueError as e:
-            raise ValueError(f"Error reshaping audio data: {e}")
+    # Reshape the data into the given number of channels
+    audio_data = audio_data.reshape(-1, num_channels)
 
-        # Average the channels to convert to mono
-        mono_audio = np.mean(audio_data, axis=1)
+    # Average the channels to convert to mono
+    mono_audio = np.mean(audio_data, axis=1)
 
-        return mono_audio, truncated_data
-    else:
-        # Reshape the data into the given number of channels
-        try:
-            audio_data = audio_data.reshape(-1, num_channels)
-        except ValueError as e:
-            raise ValueError(f"Error reshaping audio data: {e}")
-
-        # Average the channels to convert to mono
-        mono_audio = np.mean(audio_data, axis=1)
-
-        return mono_audio, np.array([])  # No truncated data
+    return mono_audio
 
 
 # Function to resample audio to the target sample rate
@@ -139,46 +156,39 @@ def normalize_audio(audio_data):
 class StreamingClientObserver:
     def __init__(self, audio_queue):
         self.audio_queue = audio_queue
-        self.audio_buffer = []
-        self.truncated_data = []  # Buffer to keep truncated data
-        self.sample_rate = 50000
+        self.audio_buffer = np.array([], dtype=np.float32)
+        self.sample_rate = SAMPLE_RATE
+        self.lock = threading.Lock()
 
     def on_audio_received(self, audio_data: AudioData, record: AudioDataRecord):
-        audio_data_values = audio_data.data
+        audio_data_values = np.array(audio_data.data, dtype=np.float32)
         num_samples_per_channel = len(audio_data_values) // NUM_CHANNELS
 
-        # Process each sample and channel in a nested loop
-        for i in range(num_samples_per_channel):
-            for c in range(NUM_CHANNELS):
-                index = i * NUM_CHANNELS + c
-                if index < len(audio_data_values):
-                    self.audio_buffer.append(audio_data_values[index])
+        # Reshape and process multi-channel audio to mono
+        audio_data_values = audio_data_values[: num_samples_per_channel * NUM_CHANNELS]
+        mono_audio = process_multi_channel_audio(audio_data_values, NUM_CHANNELS)
 
-        # Combine previous truncated data with new incoming data
-        self.audio_buffer.extend(self.truncated_data)
+        # Append new audio to buffer
+        self.audio_buffer = np.concatenate((self.audio_buffer, mono_audio))
 
-        # Calculate the buffer duration in seconds
-        current_buffer_duration = len(self.audio_buffer) / (SAMPLE_RATE * NUM_CHANNELS)
-
-        if current_buffer_duration >= BUFFER_DURATION:
-            mono_audio, self.truncated_data = process_multi_channel_audio(
-                np.array(self.audio_buffer), NUM_CHANNELS
-            )
-            self.audio_buffer = (
-                self.truncated_data.tolist()
-            )  # Keep truncated part for next round
+        # Process audio buffer if it has enough data for the buffer duration
+        buffer_sample_count = int(SAMPLE_RATE * BUFFER_DURATION)
+        if len(self.audio_buffer) >= buffer_sample_count:
+            buffer_audio = self.audio_buffer[:buffer_sample_count]
+            self.audio_buffer = self.audio_buffer[buffer_sample_count:]
 
             # Resample to target sample rate for Whisper
             resampled_audio = resample_audio(
-                mono_audio, SAMPLE_RATE, TARGET_SAMPLE_RATE
+                buffer_audio, SAMPLE_RATE, TARGET_SAMPLE_RATE
             )
 
             # Normalize audio to -1, 1 and convert to float32
             normalized_audio = normalize_audio(resampled_audio)
 
-            self.audio_queue.put(
-                normalized_audio.tolist()
-            )  # Convert to list before queuing
+            # Add to queue
+            self.lock.acquire()
+            self.audio_queue.put(normalized_audio.tolist())
+            self.lock.release()
 
 
 # Main function to set up and manage streaming
@@ -222,17 +232,11 @@ def main():
         print("Start listening to audio data")
         streaming_client.subscribe()
 
-        model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-        # Try this method later.
-        # while True:
-        #     if not audio_queue.empty():
-        #         audio_data = audio_queue.get()
-        #         transcribe_audio(model, audio_data)
-        #     else:
-        #         time.sleep(0.1)  # Adjust sleep time as needed for your application
-
+        model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
         transcription_thread = threading.Thread(
-            target=transcribe_audio, args=(model, audio_queue), daemon=True
+            target=transcribe_audio,
+            args=(model, audio_queue, observer.lock),
+            daemon=True,
         )
         transcription_thread.start()
         print("Transcription thread started")

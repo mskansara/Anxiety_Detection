@@ -164,3 +164,11 @@ cython_debug/
 transcriptions.txt
 audio_values.txt
 output_32bit.wav
+
+.idea
+
+clips
+transcriptions
+train
+
+Process_Diagram.drawio

@@ -8,6 +8,22 @@ import threading
 from projectaria_tools.core.sensor_data import ImageData, ImageDataRecord
 import cv2
 from deepface import DeepFace
+import json
+
+backends = [
+    "opencv",
+    "ssd",
+    "dlib",
+    "mtcnn",
+    "fastmtcnn",
+    "retinaface",
+    "mediapipe",
+    "yolov8",
+    "yunet",
+    "centerface",
+]
+
+alignment_modes = [True, False]
 
 
 # Argument parsing
@@ -111,87 +127,110 @@ class StreamingClientObserver:
                 image = self.image_queue.get(timeout=1)  # Wait for 1 second
                 if image is None:  # Termination signal
                     break
+                face_objs = DeepFace.extract_faces(
+                    img_path=image,
+                    detector_backend=backends[4],
+                    align=alignment_modes[0],
+                )
 
-                # Preprocess the image
-                processed_image = self.preprocess_image(image)
-                if processed_image is None:
+                if face_objs is None:
                     print("No face detected in the image.")
                     continue
 
-                # Use DeepFace to analyze the image with the local model
-                analysis = DeepFace.analyze(
-                    processed_image, actions=["emotion"], enforce_detection=False
-                )
+                # Use DeepFace to analyze the image
 
-                # Extract the dominant emotion and its confidence
-                dominant_emotion = analysis["dominant_emotion"]
-                confidence = analysis["emotion"][dominant_emotion]
+                for face_obj in face_objs:
+                    print(face_obj)
+                    face_image = face_obj["face"]
+                    # Convert the face image to a format DeepFace expects
+                    if face_image.dtype != np.uint8:
+                        face_image = (255.0 * face_image).astype(np.uint8)
 
-                print(
-                    f"Detected mood: {dominant_emotion} with confidence: {confidence:.2f}%"
-                )
+                    analysis = DeepFace.analyze(
+                        img_path=face_image,
+                        actions=["emotion"],
+                    )
+                    print(analysis)
+                    # Extract the dominant emotion and its confidence
+                    dominant_emotion = analysis["dominant_emotion"]
+                    confidence = analysis["emotion"][dominant_emotion]
+
+                    print(
+                        f"Detected mood: {dominant_emotion} with confidence: {confidence:.2f}%"
+                    )
 
             except Empty:
                 continue  # No image in the queue, continue waiting
             except Exception as e:
                 print(f"Error detecting mood: {e}")
 
-    def preprocess_image(self, image: np.array) -> np.array:
-        """
-        Preprocesses the image to detect and crop the face, and converts it to RGB.
+    # def preprocess_image(self, image: np.array) -> np.array:
+    #     """
+    #     Preprocesses the image to detect and crop the face, and converts it to RGB.
 
-        Args:
-        - image (np.array): The original image.
+    #     Args:
+    #     - image (np.array): The original image.
 
-        Returns:
-        - np.array: The processed image ready for face detection and mood analysis.
-        """
-        try:
-            # Convert to grayscale for face detection
-            gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    #     Returns:
+    #     - np.array: The processed image ready for face detection and mood analysis.
+    #     """
+    #     try:
+    #         # Convert to grayscale for face detection
+    #         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-            # Focus on the central part of the image
-            height, width = gray_image.shape
-            central_region = gray_image[
-                height // 4 : 3 * height // 4, width // 4 : 3 * width // 4
-            ]
+    #         # Focus on the central part of the image
+    #         height, width = gray_image.shape
+    #         central_region = gray_image[
+    #             height // 4 : 3 * height // 4, width // 4 : 3 * width // 4
+    #         ]
 
-            # Adjust detection parameters for different conditions
-            faces = self.face_cascade.detectMultiScale(
-                central_region,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(30, 30),
-                flags=cv2.CASCADE_SCALE_IMAGE,
-            )
+    #         # Adjust detection parameters for different conditions
+    #         faces = self.face_cascade.detectMultiScale(
+    #             central_region,
+    #             scaleFactor=1.1,
+    #             minNeighbors=5,
+    #             minSize=(30, 30),
+    #             flags=cv2.CASCADE_SCALE_IMAGE,
+    #         )
 
-            if len(faces) == 0:
-                return None  # No faces detected
+    #         if len(faces) == 0:
+    #             return None  # No faces detected
 
-            # Adjust face coordinates to the original image dimensions
-            x, y, w, h = faces[0]
-            x += width // 4
-            y += height // 4
+    #         # Adjust face coordinates to the original image dimensions
+    #         print(faces[0])
+    #         x, y, w, h = faces[0]
+    #         x += width // 4
+    #         y += height // 4
 
-            # Draw a rectangle around the detected face for debugging
-            cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            debug_filename = f"face_detected_{self.image_counter}.jpg"
-            cv2.imwrite(debug_filename, image)
-            print(f"Face detected and saved as {debug_filename}")
+    #         padding = 100  # Add padding to avoid too-tight cropping
+    #         x = max(0, x - padding)
+    #         y = max(0, y - padding)
+    #         w += 2 * padding
+    #         h += 2 * padding
 
-            # Crop the face
-            face_image = image[y : y + h, x : x + w]
+    #         # Draw a rectangle around the detected face for debugging
+    #         cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
-            # Convert the face image to RGB
-            rgb_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+    #         # Crop the face
+    #         face_image = image[y : y + h, x : x + w]
 
-            # Resize to the required size for the model (e.g., 224x224 or 48x48)
-            resized_image = cv2.resize(rgb_image, (224, 224))
+    #         # Convert the face image to RGB
+    #         rgb_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
 
-            return resized_image
-        except Exception as e:
-            print(f"Error in preprocessing image: {e}")
-            return None
+    #         # Resize to the required size for the model (e.g., 224x224 or 48x48)
+    #         resized_image = cv2.resize(rgb_image, (48, 48))
+
+    #         # Rotate the image 90 degrees to the right
+    #         rotated_image = cv2.rotate(resized_image, cv2.ROTATE_90_CLOCKWISE)
+
+    #         debug_filename = f"face_detected_{self.image_counter}.jpg"
+    #         cv2.imwrite(debug_filename, rotated_image)
+    #         print(f"Face detected and saved as {debug_filename}")
+
+    #         return rotated_image
+    #     except Exception as e:
+    #         print(f"Error in preprocessing image: {e}")
+    #         return None
 
 
 # Main function to set up and manage streaming

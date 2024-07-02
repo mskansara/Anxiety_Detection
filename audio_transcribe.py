@@ -7,6 +7,9 @@ from queue import Queue, Empty
 import threading
 from faster_whisper import WhisperModel
 from projectaria_tools.core.sensor_data import AudioData, AudioDataRecord
+from pyannote.audio import Pipeline
+import os
+from dotenv import load_dotenv
 
 
 # Argument parsing
@@ -47,8 +50,18 @@ NUM_CHANNELS = 7  # Number of audio channels
 BUFFER_DURATION = 10  # Buffer duration for processing in seconds
 CHUNK_DURATION = 10  # Chunk duration for transcription in seconds
 
+load_dotenv()
+
+AUTH_TOKEN = os.getenv("PYANNOTE_TOKEN")
+
 
 class AudioProcessor:
+    def __init__(self):
+        # self.lock = threading.lock()
+        self.pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization", use_auth_token=AUTH_TOKEN
+        )
+
     # Function to convert 32-bit multi-channel audio data to mono 16-bit
     def process_multi_channel_audio(self, audio_data, num_channels):
         total_samples = len(audio_data)
@@ -137,14 +150,14 @@ class AudioProcessor:
                     segments, _ = model.transcribe(
                         audio_data, beam_size=5, language="en"
                     )
-                    for segment in segments:
-                        print(f"{segment.text}")
-                    # with open("transcriptions.txt", "a") as f:
-                    #     for segment in segments:
-                    #         f.write(f"{segment.text}\n")
-                    #         print(
-                    #             f"[{segment.start:.2f} - {segment.end:.2f}]: {segment.text}"
-                    #         )
+                    transcription = "\n".join(segment.text for segment in segments)
+                    diarization = self.pipeline(
+                        {"waveform": audio_data, "sample_rate": 16000}
+                    )
+                    labeled_transcription = self.label_transcription(
+                        diarization, transcription
+                    )
+                    self.save_transcription(labeled_transcription, output_folder)
 
                 else:
                     print("No audio data to process.")
@@ -153,6 +166,39 @@ class AudioProcessor:
                 print(f"Error during transcription: {e}")
             finally:
                 time.sleep(0.1)
+
+    def label_transcription(self, diarization, transcription):
+        labeled_segments = []
+        for segment, _, speaker in diarization.itertracks(yield_label=True):
+            start_time = segment.start
+            end_time = segment.end
+            text_segment = self.get_text_segment(transcription, start_time, end_time)
+            labeled_segments.append(f"[{speaker}] {text_segment}")
+        return "\n".join(labeled_segments)
+
+    def get_text_segment(self, transcription, start_time, end_time):
+        # This function needs to match the text segment with the time range.
+        # It is a placeholder and should be implemented according to your transcription format.
+        # Initialize an empty list to hold the text segments
+        text_segment = []
+
+        # Iterate through each segment in the transcription
+        for segment in transcription:
+            segment_start = segment["start"]
+            segment_end = segment["end"]
+            segment_text = segment["text"]
+
+            # Check if the segment overlaps with the time range
+            if segment_start < end_time and segment_end > start_time:
+                text_segment.append(segment_text)
+
+        # Join the text segments to form the final text for the time range
+        return " ".join(text_segment)
+
+    def save_transcription(self, transcription, output_folder):
+        output_path = os.path.join(output_folder, "transcription.txt")
+        with open(output_path, "w") as f:
+            f.write(transcription)
 
 
 class StreamingClientObserver:
@@ -245,6 +291,7 @@ class ProjectARIAHandler:
 
 # Main function to set up and manage streaming
 def main():
+    output_folder = "./transcriptions"
     args = parse_args()
     project_aria_handler = ProjectARIAHandler(args)
     [streaming_client, streaming_manager, device_client, device] = (
@@ -263,8 +310,8 @@ def main():
 
         model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
         transcription_thread = threading.Thread(
-            target=observer.audio_processor.transcribe_audio,
-            args=(model, audio_queue, observer.lock),
+            target=audio_processor.transcribe_audio,
+            args=(model, audio_queue, output_folder),
             daemon=True,
         )
         transcription_thread.start()

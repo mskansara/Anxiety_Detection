@@ -52,14 +52,16 @@ CHUNK_DURATION = 10  # Chunk duration for transcription in seconds
 
 load_dotenv()
 
-AUTH_TOKEN = os.getenv("PYANNOTE_TOKEN")
+# AUTH_TOKEN = os.getenv("PYANNOTE_TOKEN")
+AUTH_TOKEN = "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"
 
 
 class AudioProcessor:
     def __init__(self):
         # self.lock = threading.lock()
-        self.pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization", use_auth_token=AUTH_TOKEN
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization@2.1",
+            use_auth_token=AUTH_TOKEN,
         )
 
     # Function to convert 32-bit multi-channel audio data to mono 16-bit

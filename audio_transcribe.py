@@ -52,8 +52,7 @@ CHUNK_DURATION = 10  # Chunk duration for transcription in seconds
 
 load_dotenv()
 
-# AUTH_TOKEN = os.getenv("PYANNOTE_TOKEN")
-AUTH_TOKEN = "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"
+AUTH_TOKEN = os.getenv("PYANNOTE_TOKEN")
 
 
 class AudioProcessor:

@@ -18,7 +18,7 @@ alignment_modes = [True, False]
 
 # Face detection and alignment
 face_objs = DeepFace.extract_faces(
-    img_path="Happy.jpg", detector_backend=backends[4], align=alignment_modes[0]
+    img_path="/images/Happy.jpg", detector_backend=backends[4], align=alignment_modes[0]
 )
 
 for face in face_objs:

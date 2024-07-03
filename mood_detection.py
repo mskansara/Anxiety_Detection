@@ -9,6 +9,7 @@ from projectaria_tools.core.sensor_data import ImageData, ImageDataRecord
 import cv2
 from deepface import DeepFace
 import json
+from fer import FER
 
 backends = [
     "opencv",
@@ -122,47 +123,59 @@ class StreamingClientObserver:
         """
         Detects mood from images in the queue using DeepFace with a local model.
         """
+        emotion_detector = FER(mtcnn=True)
         while True:
             try:
                 image = self.image_queue.get(timeout=1)  # Wait for 1 second
+                print(image)
                 if image is None:  # Termination signal
                     break
-                face_objs = DeepFace.extract_faces(
-                    img_path=image,
-                    detector_backend=backends[4],
-                    align=alignment_modes[0],
-                )
 
-                if face_objs is None:
-                    print("No face detected in the image.")
+                analysis = emotion_detector.detect_emotions(image)
+
+                if analysis:
+                    print(analysis)
                     continue
 
-                # Use DeepFace to analyze the image
+                # face_objs = DeepFace.extract_faces(
+                #     img_path=image,
+                #     detector_backend=backends[4],
+                #     align=alignment_modes[0],
+                # )
 
-                for face_obj in face_objs:
-                    print(face_obj)
-                    face_image = face_obj["face"]
-                    # Convert the face image to a format DeepFace expects
-                    if face_image.dtype != np.uint8:
-                        face_image = (255.0 * face_image).astype(np.uint8)
+                # if face_objs is None:
+                #     print("No face detected in the image.")
+                #     continue
 
-                    analysis = DeepFace.analyze(
-                        img_path=face_image,
-                        actions=["emotion"],
-                    )
-                    print(analysis)
-                    # Extract the dominant emotion and its confidence
-                    dominant_emotion = analysis["dominant_emotion"]
-                    confidence = analysis["emotion"][dominant_emotion]
+                # # Use DeepFace to analyze the image
 
-                    print(
-                        f"Detected mood: {dominant_emotion} with confidence: {confidence:.2f}%"
-                    )
+                # for face_obj in face_objs:
+                #     # print(face_obj)
+                #     print("Face Detected")
+                #     face_image = face_obj["face"]
+                #     # Convert the face image to a format DeepFace expects
+                #     if face_image.dtype != np.uint8:
+                #         face_image = (255.0 * face_image).astype(np.uint8)
+                #         print(face_image)
+                #     analysis = DeepFace.analyze(
+                #         img_path=face_image,
+                #         actions=["emotion"],
+                #         enforce_detection=False
+                #     )
+                #     print(analysis)
+                #     # Extract the dominant emotion and its confidence
+                #     dominant_emotion = analysis["dominant_emotion"]
+                #     confidence = analysis["emotion"][dominant_emotion]
+
+                #     print(
+                #         f"Detected mood: {dominant_emotion} with confidence: {confidence:.2f}%"
+                #     )
 
             except Empty:
                 continue  # No image in the queue, continue waiting
             except Exception as e:
-                print(f"Error detecting mood: {e}")
+                # print(f"Error detecting mood: {e}")
+                continue
 
     # def preprocess_image(self, image: np.array) -> np.array:
     #     """

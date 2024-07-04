@@ -131,16 +131,9 @@ class StreamingClientObserver:
                 # print(image)
                 if image is None:  # Termination signal
                     break
-                face_objs = DeepFace.extract_faces(
-                    img_path=image,
-                    detector_backend=backends[4],
-                    align=alignment_modes[0],
-                )
-                face_image = face_objs[0]["face"]
-                if face_image.dtype != np.uint8:
-                    face_image = (255.0 * face_image).astype(np.uint8)
-                analysis = emotion_detector.detect_emotions(face_image)
-                emotion, score = emotion_detector.top_emotion(face_image)
+
+                analysis = emotion_detector.detect_emotions(image)
+                emotion, score = emotion_detector.top_emotion(image)
 
                 if analysis:
                     print(emotion, score)

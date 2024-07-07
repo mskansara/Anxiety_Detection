@@ -26,6 +26,10 @@ backends = [
 
 alignment_modes = [True, False]
 
+colour_codes = {"neutral": "white", "happy": "blue", "sad": "orange", "angry": "red"}
+
+mood = {}
+
 
 # Argument parsing
 def parse_args() -> argparse.Namespace:
@@ -109,14 +113,15 @@ class ProjectARIAHandler:
 
 class StreamingClientObserver:
     def __init__(self):
-        self.rgb_image = None
+        self.rgb_image = {"data": None, "timestamp": None}
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         self.image_counter = 0
 
     def on_image_received(self, image: np.array, record: ImageDataRecord):
-        self.rgb_image = image
+        self.rgb_image["data"] = image
+        self.rgb_image["timestamp"] = record.capture_timestamp_ns
 
     def detect_mood(self):
         """
@@ -125,7 +130,7 @@ class StreamingClientObserver:
         emotion_detector = FER(mtcnn=True)
         while True:
             try:
-                image = self.rgb_image
+                image = self.rgb_image["data"]
                 image = np.rot90(image, -1)
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 # print(image)
@@ -136,7 +141,13 @@ class StreamingClientObserver:
                 emotion, score = emotion_detector.top_emotion(image)
 
                 if analysis:
-                    print(emotion, score)
+                    mood = {
+                        "timestamp": self.rgb_image["timestamp"],
+                        "emotion": emotion,
+                        "score": score,
+                        "colour": colour_codes[emotion],
+                    }
+                    print(mood)
                     continue
 
             except Exception as e:

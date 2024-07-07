@@ -3,7 +3,6 @@ import argparse
 import sys
 import aria.sdk as aria
 import time
-from queue import Queue, Empty
 import threading
 from faster_whisper import WhisperModel
 from projectaria_tools.core.sensor_data import AudioData, AudioDataRecord
@@ -57,12 +56,11 @@ AUTH_TOKEN = os.getenv("AUTH_TOKEN")
 
 
 class AudioProcessor:
-    def __init__(self):
-        self.lock = threading.Lock()
-        # self.pipeline = Pipeline.from_pretrained(
-        #     "pyannote/speaker-diarization@2.1",
-        #     use_auth_token=AUTH_TOKEN,
-        # )
+    # def __init__(self):
+    # self.pipeline = Pipeline.from_pretrained(
+    #     "pyannote/speaker-diarization@2.1",
+    #     use_auth_token=AUTH_TOKEN,
+    # )
 
     # Function to convert 32-bit multi-channel audio data to mono 16-bit
     def process_multi_channel_audio(self, audio_data, num_channels):
@@ -101,61 +99,31 @@ class AudioProcessor:
         return normalized_data
 
     # Function to handle real-time transcription and diarization
-    def transcribe_and_diarize_audio(self, model, audio_queue, output_folder):
-        target_chunk_size = int(TARGET_SAMPLE_RATE * BUFFER_DURATION)
-        print(f"Target chunk size for processing: {target_chunk_size} samples")
+    def transcribe_and_diarize_audio(self, model, audio_data, output_folder):
+        try:
+            # Convert the audio data to a numpy array
+            audio_data = np.array(audio_data, dtype=np.float32)
 
-        while True:
-            try:
-                audio_data = []
+            # Transcribe the audio data
+            segments, _ = model.transcribe(audio_data, beam_size=5, language="en")
+            transcription = "\n".join(segment.text for segment in segments)
+            if transcription:
+                print(transcription)
+            # Prepare audio for diarization
+            # waveform = torch.tensor([audio_data], dtype=torch.float32)
+            # print(waveform)
 
-                while len(audio_data) < target_chunk_size:
-                    self.lock.acquire()
-                    try:
-                        needed_samples = target_chunk_size - len(audio_data)
-
-                        if not audio_queue.empty():
-                            queue_data = audio_queue.get(timeout=1)
-                            chunk_data = queue_data[:needed_samples]
-                            audio_data.extend(chunk_data)
-
-                            if len(queue_data) > needed_samples:
-                                remaining_data = queue_data[needed_samples:]
-                                audio_queue.put(remaining_data)
-                    finally:
-                        self.lock.release()
-
-                    time.sleep(0.1)
-
-                if audio_data:
-                    audio_data = np.array(audio_data, dtype=np.float32)
-
-                    # Transcribe the audio data
-                    segments, _ = model.transcribe(
-                        audio_data, beam_size=5, language="en"
-                    )
-                    transcription = "\n".join(segment.text for segment in segments)
-                    print(transcription)
-                    # Prepare audio for diarization
-                    waveform = torch.tensor([audio_data], dtype=torch.float32)
-                    print(waveform)
-
-                    # Diarize the audio
-                    # diarization = self.pipeline(
-                    #     {"waveform": waveform, "sample_rate": TARGET_SAMPLE_RATE}
-                    # )
-                    # print(diarization)
-                    # Match transcription with diarization
-                    # labeled_transcription = self.label_transcription(
-                    #     diarization, transcription
-                    # )
-                    # print(labeled_transcription)
-                    # self.save_transcription(labeled_transcription, output_folder)
-
-            except Exception as e:
-                print(f"Error during transcription: {e}")
-            finally:
-                time.sleep(0.1)
+            # # Diarize the audio
+            # diarization = self.pipeline(
+            #     {"waveform": waveform, "sample_rate": TARGET_SAMPLE_RATE}
+            # )
+            # print(diarization)
+            # # Match transcription with diarization
+            # labeled_transcription = self.label_transcription(diarization, transcription)
+            # print(labeled_transcription)
+            # self.save_transcription(labeled_transcription, output_folder)
+        except Exception as e:
+            print(f"Error during transcription and diarization: {e}")
 
     def label_transcription(self, diarization, transcription):
         labeled_segments = []
@@ -178,39 +146,40 @@ class AudioProcessor:
 
 
 class StreamingClientObserver:
-    def __init__(self, audio_queue, audio_processor):
-        self.audio_queue = audio_queue
-        self.audio_buffer = np.array([], dtype=np.float32)
-        self.sample_rate = SAMPLE_RATE
-        self.lock = threading.Lock()
+    def __init__(self, audio_processor, model, output_folder):
         self.audio_processor = audio_processor
+        self.model = model
+        self.output_folder = output_folder
 
     def on_audio_received(self, audio_data: AudioData, record: AudioDataRecord):
-        audio_data_values = np.array(audio_data.data, dtype=np.float32)
-        num_samples_per_channel = len(audio_data_values) // NUM_CHANNELS
+        try:
+            # Process the incoming audio data
+            audio_data_values = np.array(audio_data.data, dtype=np.float32)
+            print(audio_data_values.shape)
+            num_samples_per_channel = len(audio_data_values) // NUM_CHANNELS
 
-        # Reshape and process multi-channel audio to mono
-        audio_data_values = audio_data_values[: num_samples_per_channel * NUM_CHANNELS]
-        mono_audio = self.audio_processor.process_multi_channel_audio(
-            audio_data_values, NUM_CHANNELS
-        )
-
-        # Append new audio to buffer
-        self.audio_buffer = np.concatenate((self.audio_buffer, mono_audio))
-
-        buffer_sample_count = int(SAMPLE_RATE * BUFFER_DURATION)
-        if len(self.audio_buffer) >= buffer_sample_count:
-            buffer_audio = self.audio_buffer[:buffer_sample_count]
-            self.audio_buffer = self.audio_buffer[buffer_sample_count:]
-
-            resampled_audio = self.audio_processor.resample_audio(
-                buffer_audio, SAMPLE_RATE, TARGET_SAMPLE_RATE
+            # Reshape and process multi-channel audio to mono
+            audio_data_values = audio_data_values[
+                : num_samples_per_channel * NUM_CHANNELS
+            ]
+            mono_audio = self.audio_processor.process_multi_channel_audio(
+                audio_data_values, NUM_CHANNELS
             )
+            print(mono_audio.shape)
+
+            # Resample and normalize audio
+            resampled_audio = self.audio_processor.resample_audio(
+                mono_audio, SAMPLE_RATE, TARGET_SAMPLE_RATE
+            )
+            print(resampled_audio.shape)
             normalized_audio = self.audio_processor.normalize_audio(resampled_audio)
 
-            self.lock.acquire()
-            self.audio_queue.put(normalized_audio.tolist())
-            self.lock.release()
+            # Perform transcription and diarization
+            self.audio_processor.transcribe_and_diarize_audio(
+                self.model, resampled_audio, self.output_folder
+            )
+        except Exception as e:
+            print(f"Error processing audio: {e}")
 
 
 class ProjectARIAHandler:
@@ -243,7 +212,7 @@ class ProjectARIAHandler:
         self.streaming_manager.streaming_config = streaming_config
         config = self.streaming_client.subscription_config
         config.subscriber_data_type = aria.StreamingDataType.Audio
-        config.message_queue_size[aria.StreamingDataType.Audio] = 100
+        config.message_queue_size[aria.StreamingDataType.Audio] = 10000
         config.security_options.use_ephemeral_certs = True
         self.streaming_client.subscription_config = config
 
@@ -269,22 +238,17 @@ def main():
     try:
         streaming_manager.start_streaming()
         print(f"Streaming state: {streaming_manager.streaming_state}")
-        audio_queue = Queue()
+
+        # Initialize the audio processor and Whisper model
         audio_processor = AudioProcessor()
-        observer = StreamingClientObserver(audio_queue, audio_processor)
+        model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
+
+        # Create the observer and start listening to audio data
+        observer = StreamingClientObserver(audio_processor, model, output_folder)
         streaming_client.set_streaming_client_observer(observer)
 
         print("Start listening to audio data")
         streaming_client.subscribe()
-
-        model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
-        transcription_thread = threading.Thread(
-            target=audio_processor.transcribe_and_diarize_audio,
-            args=(model, audio_queue, output_folder),
-            daemon=True,
-        )
-        transcription_thread.start()
-        print("Transcription thread started")
 
         while True:
             time.sleep(1)

@@ -1,19 +1,23 @@
+import argparse
 import numpy as np
 import argparse
 import sys
 import aria.sdk as aria
 import time
+from queue import Queue, Empty
 import threading
 from faster_whisper import WhisperModel
 from projectaria_tools.core.sensor_data import AudioData, AudioDataRecord
-
-# from pyannote.audio import Pipeline
-import os
-from dotenv import load_dotenv
-import torch
+import jiwer
 
 
-# Argument parsing
+# Constants
+SAMPLE_RATE = 48000  # Original sample rate from live streaming
+TARGET_SAMPLE_RATE = 16000  # Target sample rate for Whisper
+NUM_CHANNELS = 7  # Number of audio channels
+BUFFER_DURATION = 45  # Buffer duration for processing in seconds
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -41,26 +45,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device-ip", help="IP address to connect to the device over wifi"
     )
+
+    parser.add_argument("--testcase", help="Provide the test case number")
     return parser.parse_args()
 
 
-# Constants
-SAMPLE_RATE = 48000  # Original sample rate from live streaming
-TARGET_SAMPLE_RATE = 16000  # Target sample rate for Whisper
-NUM_CHANNELS = 7  # Number of audio channels
-BUFFER_DURATION = 10  # Buffer duration for processing in seconds
-
-load_dotenv()
-
-AUTH_TOKEN = os.getenv("AUTH_TOKEN")
-
-
 class AudioProcessor:
-    # def __init__(self):
-    # self.pipeline = Pipeline.from_pretrained(
-    #     "pyannote/speaker-diarization@2.1",
-    #     use_auth_token=AUTH_TOKEN,
-    # )
+    def __init__(self):
+        self.lock = threading.Lock()
+        # self.pipeline = Pipeline.from_pretrained(
+        #     "pyannote/speaker-diarization@2.1",
+        #     use_auth_token=AUTH_TOKEN,
+        # )
 
     # Function to convert 32-bit multi-channel audio data to mono 16-bit
     def process_multi_channel_audio(self, audio_data, num_channels):
@@ -99,87 +95,83 @@ class AudioProcessor:
         return normalized_data
 
     # Function to handle real-time transcription and diarization
-    def transcribe_and_diarize_audio(self, model, audio_data, output_folder):
-        try:
-            # Convert the audio data to a numpy array
-            audio_data = np.array(audio_data, dtype=np.float32)
+    def transcribe_audio(self, model, audio_queue, finalTranscription):
+        target_chunk_size = int(TARGET_SAMPLE_RATE * BUFFER_DURATION)
+        print(f"Target chunk size for processing: {target_chunk_size} samples")
 
-            # Transcribe the audio data
-            segments, _ = model.transcribe(audio_data, beam_size=5, language="en")
-            transcription = "\n".join(segment.text for segment in segments)
-            if transcription:
-                print(transcription)
-            # Prepare audio for diarization
-            # waveform = torch.tensor([audio_data], dtype=torch.float32)
-            # print(waveform)
+        while True:
+            try:
+                audio_data = []
 
-            # # Diarize the audio
-            # diarization = self.pipeline(
-            #     {"waveform": waveform, "sample_rate": TARGET_SAMPLE_RATE}
-            # )
-            # print(diarization)
-            # # Match transcription with diarization
-            # labeled_transcription = self.label_transcription(diarization, transcription)
-            # print(labeled_transcription)
-            # self.save_transcription(labeled_transcription, output_folder)
-        except Exception as e:
-            print(f"Error during transcription and diarization: {e}")
+                while len(audio_data) < target_chunk_size:
+                    self.lock.acquire()
+                    try:
+                        needed_samples = target_chunk_size - len(audio_data)
 
-    def label_transcription(self, diarization, transcription):
-        labeled_segments = []
-        for segment, _, speaker in diarization.itertracks(yield_label=True):
-            start_time = segment.start
-            end_time = segment.end
-            text_segment = self.get_text_segment(transcription, start_time, end_time)
-            labeled_segments.append(f"[{speaker}] {text_segment}")
-        return "\n".join(labeled_segments)
+                        if not audio_queue.empty():
+                            queue_data = audio_queue.get(timeout=1)
+                            chunk_data = queue_data[:needed_samples]
+                            audio_data.extend(chunk_data)
 
-    def get_text_segment(self, transcription, start_time, end_time):
-        # Placeholder to match the text segment with the time range.
-        text_segment = transcription[int(start_time) : int(end_time)]
-        return text_segment
+                            if len(queue_data) > needed_samples:
+                                remaining_data = queue_data[needed_samples:]
+                                audio_queue.put(remaining_data)
+                    finally:
+                        self.lock.release()
 
-    def save_transcription(self, transcription, output_folder):
-        output_path = os.path.join(output_folder, "transcription.txt")
-        with open(output_path, "w") as f:
-            f.write(transcription)
+                    time.sleep(0.1)
+
+                if audio_data:
+                    audio_data = np.array(audio_data, dtype=np.float32)
+
+                    # Transcribe the audio data
+                    segments, _ = model.transcribe(
+                        audio_data, beam_size=5, language="en"
+                    )
+                    transcription = "\n".join(segment.text for segment in segments)
+                    print(transcription)
+                    finalTranscription.append(transcription)
+
+            except Exception as e:
+                print(f"Error during transcription: {e}")
+            finally:
+                time.sleep(0.1)
 
 
 class StreamingClientObserver:
-    def __init__(self, audio_processor, model, output_folder):
+    def __init__(self, audio_queue, audio_processor):
+        self.audio_queue = audio_queue
+        self.audio_buffer = np.array([], dtype=np.float32)
+        self.sample_rate = SAMPLE_RATE
+        self.lock = threading.Lock()
         self.audio_processor = audio_processor
-        self.model = model
-        self.output_folder = output_folder
 
     def on_audio_received(self, audio_data: AudioData, record: AudioDataRecord):
-        try:
-            # Process the incoming audio data
-            audio_data_values = np.array(audio_data.data, dtype=np.float32)
-            print(audio_data_values.shape)
-            num_samples_per_channel = len(audio_data_values) // NUM_CHANNELS
+        audio_data_values = np.array(audio_data.data, dtype=np.float32)
+        num_samples_per_channel = len(audio_data_values) // NUM_CHANNELS
 
-            # Reshape and process multi-channel audio to mono
-            audio_data_values = audio_data_values[
-                : num_samples_per_channel * NUM_CHANNELS
-            ]
-            mono_audio = self.audio_processor.process_multi_channel_audio(
-                audio_data_values, NUM_CHANNELS
-            )
-            print(mono_audio.shape)
+        # Reshape and process multi-channel audio to mono
+        audio_data_values = audio_data_values[: num_samples_per_channel * NUM_CHANNELS]
+        mono_audio = self.audio_processor.process_multi_channel_audio(
+            audio_data_values, NUM_CHANNELS
+        )
 
-            # Resample and normalize audio
+        # Append new audio to buffer
+        self.audio_buffer = np.concatenate((self.audio_buffer, mono_audio))
+
+        buffer_sample_count = int(SAMPLE_RATE * BUFFER_DURATION)
+        if len(self.audio_buffer) >= buffer_sample_count:
+            buffer_audio = self.audio_buffer[:buffer_sample_count]
+            self.audio_buffer = self.audio_buffer[buffer_sample_count:]
+
             resampled_audio = self.audio_processor.resample_audio(
-                mono_audio, SAMPLE_RATE, TARGET_SAMPLE_RATE
+                buffer_audio, SAMPLE_RATE, TARGET_SAMPLE_RATE
             )
-            print(resampled_audio.shape)
             normalized_audio = self.audio_processor.normalize_audio(resampled_audio)
 
-            # Perform transcription and diarization
-            self.audio_processor.transcribe_and_diarize_audio(
-                self.model, resampled_audio, self.output_folder
-            )
-        except Exception as e:
-            print(f"Error processing audio: {e}")
+            self.lock.acquire()
+            self.audio_queue.put(normalized_audio.tolist())
+            self.lock.release()
 
 
 class ProjectARIAHandler:
@@ -212,7 +204,7 @@ class ProjectARIAHandler:
         self.streaming_manager.streaming_config = streaming_config
         config = self.streaming_client.subscription_config
         config.subscriber_data_type = aria.StreamingDataType.Audio
-        config.message_queue_size[aria.StreamingDataType.Audio] = 10000
+        config.message_queue_size[aria.StreamingDataType.Audio] = 100
         config.security_options.use_ephemeral_certs = True
         self.streaming_client.subscription_config = config
 
@@ -228,9 +220,47 @@ class ProjectARIAHandler:
         pass
 
 
+def checkAccuracy(finalTranscription, transcriptionFile):
+    # Combine the finalTranscription list into a single string
+    combinedTranscription = " ".join(finalTranscription).replace("\n", " ").strip()
+
+    # Read the transcription file content
+    with open(transcriptionFile, "r") as file:
+        fileTranscription = file.read().replace("\n", " ").strip()
+
+    # Print both transcriptions for debugging purposes
+    print("Combined Transcription from the list:")
+    print(combinedTranscription)
+    print("\nTranscription from the file:")
+    print(fileTranscription)
+
+    # Calculate Word Error Rate (WER)
+    wer = jiwer.wer(fileTranscription, combinedTranscription)
+    print(f"Word Error Rate (WER): {wer:.2%}")
+
+    # Optional: Print differences if needed
+    if combinedTranscription != fileTranscription:
+        print("\nDifferences found:")
+        print("Combined Transcription:")
+        print(combinedTranscription)
+        print("\nFile Transcription:")
+        print(fileTranscription)
+
+
 def main():
-    output_folder = "./transcriptions"
     args = parse_args()
+    testCase = args.testcase
+    transcriptFile = "./Transcripts/"
+    finalTranscription = []
+
+    match testCase:
+        case "1":
+            transcriptFile = transcriptFile + "accent3.txt"
+        case "2":
+            print("Test case 2 selected")
+        case _:
+            print("Unknown test case selected")
+
     project_aria_handler = ProjectARIAHandler(args)
     [streaming_client, streaming_manager, device_client, device] = (
         project_aria_handler.setup_project_aria()
@@ -238,22 +268,29 @@ def main():
     try:
         streaming_manager.start_streaming()
         print(f"Streaming state: {streaming_manager.streaming_state}")
-
-        # Initialize the audio processor and Whisper model
+        audio_queue = Queue()
         audio_processor = AudioProcessor()
-        model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
-
-        # Create the observer and start listening to audio data
-        observer = StreamingClientObserver(audio_processor, model, output_folder)
+        observer = StreamingClientObserver(audio_queue, audio_processor)
         streaming_client.set_streaming_client_observer(observer)
 
         print("Start listening to audio data")
         streaming_client.subscribe()
 
+        model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
+        transcription_thread = threading.Thread(
+            target=audio_processor.transcribe_audio,
+            args=(model, audio_queue, finalTranscription),
+            daemon=True,
+        )
+        transcription_thread.start()
+        print("Transcription thread started")
+
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("Exiting...")
+        checkAccuracy(finalTranscription, transcriptFile)
+
     finally:
         print("Stop listening to audio data")
         streaming_client.unsubscribe()

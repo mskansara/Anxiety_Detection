@@ -144,29 +144,36 @@ class AudioProcessor:
         max_val = np.max(np.abs(audio_data))
         return audio_data / max_val if max_val > 0 else audio_data
 
-    def transcribe_and_diarize_audio(self, model, audio_queue, output_folder):
+    def transcribe_and_diarize_audio(
+        self, model, audio_queue, output_folder, transcriptions
+    ):
         target_chunk_size = int(TARGET_SAMPLE_RATE * BUFFER_DURATION)
         while True:
             try:
                 audio_data = []
+                start_audio_timestamp = None
+                end_audio_timestamp = None
                 while len(audio_data) < target_chunk_size:
                     self.lock.acquire()
                     try:
-                        # Extract the audio data and other information from the dictionary
-                        queue_item = audio_queue.get(timeout=1)
-                        chunk_data = queue_item.get["audio_data"]
-                        timestamp = queue_item.get("timestamp", None)
-                        needed_samples = target_chunk_size - len(audio_data)
                         if not audio_queue.empty():
-                            queue_data = audio_queue.get(timeout=1)
-                            chunk_data = queue_data[:needed_samples]
-                            audio_data.extend(chunk_data)
-                            if len(queue_data) > needed_samples:
-                                remaining_data = queue_data[needed_samples:]
+                            queue_item = audio_queue.get(timeout=1)
+                            chunk_data = queue_item["audio_data"]
+                            start_audio_timestamp = queue_item.get(
+                                "start_timestamp", start_audio_timestamp
+                            )
+                            end_audio_timestamp = queue_item.get(
+                                "end_timestamp", end_audio_timestamp
+                            )
+                            needed_samples = target_chunk_size - len(audio_data)
+                            audio_data.extend(chunk_data[:needed_samples])
+                            if len(chunk_data) > needed_samples:
+                                remaining_data = chunk_data[needed_samples:]
                                 audio_queue.put(
                                     {
                                         "audio_data": remaining_data,
-                                        "timestamp": timestamp,
+                                        "start_timestamp": start_audio_timestamp,
+                                        "end_timestamp": end_audio_timestamp,
                                     }
                                 )
                     finally:
@@ -176,10 +183,17 @@ class AudioProcessor:
                 if audio_data:
                     audio_data = np.array(audio_data, dtype=np.float32)
                     segments, _ = model.transcribe(
-                        audio_data, beam_size=5, language="en"
+                        audio_data, beam_size=5, language="en", vad_filter=True
                     )
                     transcription = "\n".join(segment.text for segment in segments)
-                    print(str(timestamp) + " - " + transcription)
+
+                    transcription_data = {
+                        "transcription": transcription,
+                        "start_timestamp": start_audio_timestamp,
+                        "end_timestamp": end_audio_timestamp,
+                    }
+                    print(transcription_data)
+                    transcriptions.append(transcription_data)
                     waveform = torch.tensor([audio_data], dtype=torch.float32)
                     print(waveform)
             except Exception as e:
@@ -190,7 +204,8 @@ class AudioProcessor:
 
 class StreamingClientObserver:
     def __init__(self, audio_queue, audio_processor):
-        self.audio_timestamp = None
+        self.start_audio_timestamp = None
+        self.end_audio_timestamp = None
         self.audio_queue = audio_queue
         self.audio_buffer = np.array([], dtype=np.float32)
         self.sample_rate = SAMPLE_RATE
@@ -203,9 +218,11 @@ class StreamingClientObserver:
         self.image_counter = 0
 
     def on_audio_received(self, audio_data: AudioData, record: AudioDataRecord):
-        self.audio_timestamp = record.capture_timestamps_ns
-        print(record.capture_timestamps_ns)
-        exit()
+        self.start_audio_timestamp = record.capture_timestamps_ns[0]
+        self.end_audio_timestamp = record.capture_timestamps_ns[
+            len(record.capture_timestamps_ns) - 1
+        ]
+
         audio_data_values = np.array(audio_data.data, dtype=np.float32)
         num_samples_per_channel = len(audio_data_values) // NUM_CHANNELS
         audio_data_values = audio_data_values[: num_samples_per_channel * NUM_CHANNELS]
@@ -229,7 +246,8 @@ class StreamingClientObserver:
             self.audio_queue.put(
                 {
                     "audio_data": normalized_audio.tolist(),
-                    "timestamp": record.capture_timestamp_ns,
+                    "start_timestamp": self.start_audio_timestamp,
+                    "end_timestamp": self.end_audio_timestamp,
                 }
             )
             self.lock.release()
@@ -238,7 +256,7 @@ class StreamingClientObserver:
         self.rgb_image["data"] = image
         self.rgb_image["timestamp"] = record.capture_timestamp_ns
 
-    def detect_mood(self):
+    def detect_mood(self, detected_mood):
         emotion_detector = FER(mtcnn=True)
         while True:
             try:
@@ -257,6 +275,7 @@ class StreamingClientObserver:
                         "colour": colour_codes[emotion],
                     }
                     print(mood)
+                    detected_mood.append(mood)
                     continue
             except Exception as e:
                 print(f"No face detected: {e}")
@@ -276,6 +295,8 @@ def main():
         print(f"Streaming state: {streaming_manager.streaming_state}")
 
         audio_queue = Queue()
+        transcriptions = []
+        detected_mood = []
         audio_processor = AudioProcessor()
         observer = StreamingClientObserver(audio_queue, audio_processor)
         streaming_client.set_streaming_client_observer(observer)
@@ -286,19 +307,24 @@ def main():
         model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
         transcription_thread = threading.Thread(
             target=audio_processor.transcribe_and_diarize_audio,
-            args=(model, audio_queue, output_folder),
+            args=(model, audio_queue, output_folder, transcriptions),
             daemon=True,
         )
         transcription_thread.start()
         print("Transcription thread started")
 
-        detection_thread = threading.Thread(target=observer.detect_mood, daemon=True)
+        detection_thread = threading.Thread(
+            target=observer.detect_mood, args=(detected_mood,), daemon=True
+        )
         detection_thread.start()
         print("Mood detection thread started")
 
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        print(transcriptions)
+        print(detected_mood)
+        time.sleep(10)
         print("Exiting...")
     finally:
         print("Stop listening to audio and image data")

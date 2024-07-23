@@ -15,7 +15,7 @@ import jiwer
 SAMPLE_RATE = 48000  # Original sample rate from live streaming
 TARGET_SAMPLE_RATE = 16000  # Target sample rate for Whisper
 NUM_CHANNELS = 7  # Number of audio channels
-BUFFER_DURATION = 45  # Buffer duration for processing in seconds
+BUFFER_DURATION = 10  # Buffer duration for processing in seconds
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,7 +126,7 @@ class AudioProcessor:
 
                     # Transcribe the audio data
                     segments, _ = model.transcribe(
-                        audio_data, beam_size=5, language="en"
+                        audio_data, beam_size=5, language="en", vad_filter=True
                     )
                     transcription = "\n".join(segment.text for segment in segments)
                     print(transcription)

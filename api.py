@@ -18,8 +18,11 @@ from fer import FER
 import os
 from dotenv import load_dotenv
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import asyncio
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+import json
 
 # Load environment variables
 load_dotenv()
@@ -33,13 +36,28 @@ BUFFER_DURATION = 10
 RGB_SUBSCRIBER_DATA_TYPE = aria.StreamingDataType.Rgb
 AUDIO_SUBSCRIBER_DATA_TYPE = aria.StreamingDataType.Audio
 
-colour_codes = {"neutral": "white", "happy": "blue", "sad": "orange", "angry": "red"}
+colour_codes = {
+    "neutral": "white",
+    "happy": "blue",
+    "sad": "orange",
+    "angry": "red",
+    "fear": "green",
+}
 
 # Global variables to hold transcriptions and detected moods
 transcriptions = []
 detected_mood = []
 
 app = FastAPI()
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Argument parsing
@@ -153,9 +171,7 @@ class AudioProcessor:
         max_val = np.max(np.abs(audio_data))
         return audio_data / max_val if max_val > 0 else audio_data
 
-    def transcribe_and_diarize_audio(
-        self, model, audio_queue, output_folder, transcriptions
-    ):
+    def transcribe_and_diarize_audio(self, model, audio_queue, websocket):
         target_chunk_size = int(TARGET_SAMPLE_RATE * BUFFER_DURATION)
         while True:
             try:
@@ -201,10 +217,16 @@ class AudioProcessor:
                         "start_timestamp": start_audio_timestamp,
                         "end_timestamp": end_audio_timestamp,
                     }
-                    print(transcription_data)
                     transcriptions.append(transcription_data)
+
+                    data = {
+                        "transcription": transcription,
+                        "start_timestamp": start_audio_timestamp,
+                        "end_timestamp": end_audio_timestamp,
+                        "mood": None,
+                    }
+                    asyncio.run(websocket.send_text(json.dumps(data)))
                     waveform = torch.tensor([audio_data], dtype=torch.float32)
-                    print(waveform)
             except Exception as e:
                 print(f"Error during transcription: {e}")
             finally:
@@ -212,7 +234,7 @@ class AudioProcessor:
 
 
 class StreamingClientObserver:
-    def __init__(self, audio_queue, audio_processor):
+    def __init__(self, audio_queue, audio_processor, websocket):
         self.start_audio_timestamp = None
         self.end_audio_timestamp = None
         self.audio_queue = audio_queue
@@ -225,6 +247,7 @@ class StreamingClientObserver:
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         self.image_counter = 0
+        self.websocket = websocket
 
     def on_audio_received(self, audio_data: AudioData, record: AudioDataRecord):
         self.start_audio_timestamp = record.capture_timestamps_ns[0]
@@ -239,7 +262,6 @@ class StreamingClientObserver:
             audio_data_values, NUM_CHANNELS
         )
         self.audio_buffer = np.concatenate((self.audio_buffer, mono_audio))
-        # print(self.audio_buffer)
         buffer_sample_count = int(SAMPLE_RATE * BUFFER_DURATION)
         if len(self.audio_buffer) >= buffer_sample_count:
             buffer_audio = self.audio_buffer[:buffer_sample_count]
@@ -251,7 +273,6 @@ class StreamingClientObserver:
             normalized_audio = self.audio_processor.normalize_audio(resampled_audio)
 
             self.lock.acquire()
-            # self.audio_queue.put(normalized_audio.tolist())
             self.audio_queue.put(
                 {
                     "start_timestamp": self.start_audio_timestamp,
@@ -265,7 +286,7 @@ class StreamingClientObserver:
         self.rgb_image["data"] = image
         self.rgb_image["timestamp"] = record.capture_timestamp_ns
 
-    def detect_mood(self, detected_mood):
+    def detect_mood(self, detected_mood, websocket):
         emotion_detector = FER(mtcnn=True)
         while True:
             try:
@@ -283,8 +304,14 @@ class StreamingClientObserver:
                         "score": score,
                         "colour": colour_codes[emotion],
                     }
-                    print(mood)
                     detected_mood.append(mood)
+                    data = {
+                        "transcription": None,
+                        "start_timestamp": self.rgb_image["timestamp"],
+                        "end_timestamp": self.rgb_image["timestamp"],
+                        "mood": mood,
+                    }
+                    asyncio.run(websocket.send_text(json.dumps(data)))
                     continue
             except Exception as e:
                 print(f"No face detected: {e}")
@@ -327,27 +354,6 @@ async def start_streaming(request: StartStreamingRequest):
         streaming_manager.start_streaming()
         print(f"Streaming state: {streaming_manager.streaming_state}")
 
-        observer = StreamingClientObserver(audio_queue, audio_processor)
-        streaming_client.set_streaming_client_observer(observer)
-
-        print("Start listening to audio and image data")
-        streaming_client.subscribe()
-
-        model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
-        transcription_thread = threading.Thread(
-            target=audio_processor.transcribe_and_diarize_audio,
-            args=(model, audio_queue, "./transcriptions", transcriptions),
-            daemon=True,
-        )
-        transcription_thread.start()
-        print("Transcription thread started")
-
-        detection_thread = threading.Thread(
-            target=observer.detect_mood, args=(detected_mood,), daemon=True
-        )
-        detection_thread.start()
-        print("Mood detection thread started")
-
         return {"status": "Streaming started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -363,12 +369,6 @@ async def stop_streaming():
         streaming_manager.stop_streaming()
         device_client.disconnect(device)
 
-        # Optionally, join the threads if needed
-        # if transcription_thread is not None:
-        #     transcription_thread.join()
-        # if detection_thread is not None:
-        #     detection_thread.join()
-
         return {
             "status": "Streaming stopped",
             "transcriptions": transcriptions,
@@ -376,6 +376,44 @@ async def stop_streaming():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    global transcription_thread, detection_thread, observer, streaming_client, streaming_manager, device_client, device, project_aria_handler
+
+    await websocket.accept()
+
+    try:
+        while True:
+            observer = StreamingClientObserver(audio_queue, audio_processor, websocket)
+            streaming_client.set_streaming_client_observer(observer)
+
+            print("Start listening to audio and image data")
+            streaming_client.subscribe()
+
+            model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
+            transcription_thread = threading.Thread(
+                target=audio_processor.transcribe_and_diarize_audio,
+                args=(model, audio_queue, websocket),
+                daemon=True,
+            )
+            transcription_thread.start()
+            print("Transcription thread started")
+
+            detection_thread = threading.Thread(
+                target=observer.detect_mood,
+                args=(detected_mood, websocket),
+                daemon=True,
+            )
+            detection_thread.start()
+            print("Mood detection thread started")
+
+            await asyncio.Future()  # Run forever
+    except WebSocketDisconnect:
+        print("Client disconnected")
+    finally:
+        await websocket.close()
 
 
 if __name__ == "__main__":

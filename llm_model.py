@@ -153,7 +153,7 @@ import os
 load_dotenv()
 AUTH_TOKEN = os.getenv("SUMMARY_PROMPT_KEY")
 
-
+'''
 def summarise_transcriptions_and_moods(data):
     # Define the prompt template
     prompt_template = PromptTemplate(
@@ -172,24 +172,24 @@ def summarise_transcriptions_and_moods(data):
         """,
     )
 
-    # Initialize the OpenAI LLM
-    llm = ChatOpenAI(
-        api_key=AUTH_TOKEN, model="gpt-3.5-turbo"
-    )  # Ensure you use your own OpenAI API key
+    # # Initialize the OpenAI LLM
+    # llm = ChatOpenAI(
+    #     api_key=AUTH_TOKEN, model="gpt-3.5-turbo"
+    # )  # Ensure you use your own OpenAI API key
 
-    # Create the LLMChain
-    chain = LLMChain(prompt=prompt_template, llm=llm)
+    # # Create the LLMChain
+    # chain = LLMChain(prompt=prompt_template, llm=llm)
 
-    # Prepare the data
-    transcriptions = json.dumps(data["transcriptions"], indent=2)
-    detected_mood = json.dumps(data["detected_mood"], indent=2)
+    # # Prepare the data
+    # transcriptions = json.dumps(data["transcriptions"], indent=2)
+    # detected_mood = json.dumps(data["detected_mood"], indent=2)
 
-    # Run the chain with the provided data
-    summary = chain.run(
-        {"transcriptions": transcriptions, "detected_mood": detected_mood}
-    )
+    # # Run the chain with the provided data
+    # summary = chain.run(
+    #     {"transcriptions": transcriptions, "detected_mood": detected_mood}
+    # )
 
-    return summary
+    # return summary
 
 
 # Example input data
@@ -328,5 +328,6 @@ data = {
 }
 
 # Call the summarise method
-summary = summarise_transcriptions_and_moods(data)
-print(summary)
+# summary = summarise_transcriptions_and_moods(data)
+# print(summary)
+'''

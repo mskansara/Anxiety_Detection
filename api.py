@@ -24,15 +24,21 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import json
 
+
+from database_connection import DatabaseConnection
+
 # Load environment variables
 load_dotenv()
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
+MONGODB_AUTH = os.getenv("MONGODB_AUTH")
+uri = f"mongodb+srv://manthankansara7:{MONGODB_AUTH}@cluster0.4ubii7g.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
 
 # Constants
 SAMPLE_RATE = 48000
 TARGET_SAMPLE_RATE = 16000
 NUM_CHANNELS = 7
-BUFFER_DURATION = 10
+BUFFER_DURATION = 0.5  # This needs to be tested
 RGB_SUBSCRIBER_DATA_TYPE = aria.StreamingDataType.Rgb
 AUDIO_SUBSCRIBER_DATA_TYPE = aria.StreamingDataType.Audio
 
@@ -374,6 +380,18 @@ async def stop_streaming():
             "transcriptions": transcriptions,
             "detected_mood": detected_mood,
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/connect")
+async def connect():
+    database = DatabaseConnection(uri)
+    try:
+        connection = database.connect()
+        if connection:
+            return {"status": "success", "message": "Connected to database"}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

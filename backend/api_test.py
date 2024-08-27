@@ -18,21 +18,160 @@ from fer import FER
 import os
 from dotenv import load_dotenv
 import torch
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 import asyncio
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import json
+from vosk import Model, KaldiRecognizer
+import pexpect
 
+from database_connection import DatabaseConnection
 
-from backend.database_connection import DatabaseConnection
+from auth import router as auth_router
+from auth import get_current_doctor, TokenData
+import shlex
+
+dummy_data = {
+    "transcriptions": [
+        {
+            "start_timestamp": "940710969012",
+            "end_timestamp": "941510981137",
+            "transcription": "Patient: I feel anxious sometimes. Doctor: Can you tell me more about that?",
+        },
+        {
+            "start_timestamp": "941520981138",
+            "end_timestamp": "942310971050",
+            "transcription": "Patient: It's like there's always this feeling of unease, especially in social situations. Doctor: When did you first notice these feelings?",
+        },
+        {
+            "start_timestamp": "942320971051",
+            "end_timestamp": "943010971550",
+            "transcription": "Patient: I think it started in high school. I used to get really nervous before class presentations. Doctor: Have these feelings of anxiety gotten better or worse over time?",
+        },
+        {
+            "start_timestamp": "943020971551",
+            "end_timestamp": "943810968887",
+            "transcription": "Patient: They have gotten worse. Now, even going to the grocery store makes me anxious. Doctor: That sounds challenging. Have you found any strategies that help manage your anxiety?",
+        },
+        {
+            "start_timestamp": "943820968888",
+            "end_timestamp": "944510969387",
+            "transcription": "Patient: Sometimes deep breathing helps, but not always. Doctor: It's good that you have a coping mechanism. Have you tried any other techniques or therapies?",
+        },
+        {
+            "start_timestamp": "944520969388",
+            "end_timestamp": "945810973062",
+            "transcription": "Patient: I tried meditation, but I find it hard to focus. Doctor: Meditation can be difficult at first. It might help to start with shorter sessions and gradually increase the time.",
+        },
+        {
+            "start_timestamp": "945820973063",
+            "end_timestamp": "946710972300",
+            "transcription": "Patient: I will try that. Doctor: Do you have a support system you can rely on, like friends or family?",
+        },
+        {
+            "start_timestamp": "946720972301",
+            "end_timestamp": "947710972425",
+            "transcription": "Patient: My family is supportive, but they don't really understand what I'm going through. Doctor: It can be hard for others to understand. Have you considered joining a support group?",
+        },
+        {
+            "start_timestamp": "947720972426",
+            "end_timestamp": "948710974850",
+            "transcription": "Patient: I haven't, but maybe I should. Doctor: Support groups can provide a sense of community and understanding. It might be worth looking into.",
+        },
+        {
+            "start_timestamp": "948720974851",
+            "end_timestamp": "949610976512",
+            "transcription": "Patient: I'll think about it. Doctor: That's good to hear. Remember, you're not alone in this, and there are people who can help.",
+        },
+        {
+            "start_timestamp": "949620976513",
+            "end_timestamp": "950610966887",
+            "transcription": "Patient: Thank you, doctor. Doctor: You're welcome. Let's continue to work on this together.",
+        },
+    ],
+    "detected_mood": [
+        {
+            "timestamp": "940710969012",
+            "emotion": "neutral",
+            "score": 0.74,
+            "colour": "white",
+        },
+        {
+            "timestamp": "941520981138",
+            "emotion": "anxious",
+            "score": 0.65,
+            "colour": "orange",
+        },
+        {
+            "timestamp": "942320971051",
+            "emotion": "nervous",
+            "score": 0.72,
+            "colour": "yellow",
+        },
+        {
+            "timestamp": "943020971551",
+            "emotion": "anxious",
+            "score": 0.77,
+            "colour": "orange",
+        },
+        {
+            "timestamp": "943820968888",
+            "emotion": "frustrated",
+            "score": 0.68,
+            "colour": "red",
+        },
+        {
+            "timestamp": "944520969388",
+            "emotion": "neutral",
+            "score": 0.70,
+            "colour": "white",
+        },
+        {
+            "timestamp": "945820973063",
+            "emotion": "hopeful",
+            "score": 0.66,
+            "colour": "blue",
+        },
+        {
+            "timestamp": "946720972301",
+            "emotion": "neutral",
+            "score": 0.67,
+            "colour": "white",
+        },
+        {
+            "timestamp": "947720972426",
+            "emotion": "considerate",
+            "score": 0.64,
+            "colour": "green",
+        },
+        {
+            "timestamp": "948720974851",
+            "emotion": "thoughtful",
+            "score": 0.71,
+            "colour": "blue",
+        },
+        {
+            "timestamp": "949620976513",
+            "emotion": "grateful",
+            "score": 0.78,
+            "colour": "blue",
+        },
+        {
+            "timestamp": "950610966887",
+            "emotion": "relieved",
+            "score": 0.81,
+            "colour": "blue",
+        },
+    ],
+}
 
 # Load environment variables
 load_dotenv()
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
 MONGODB_AUTH = os.getenv("MONGODB_AUTH")
 uri = f"mongodb+srv://manthankansara7:{MONGODB_AUTH}@cluster0.4ubii7g.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-
+SSH_PASSPHRASE = os.getenv("SSH_PASSPHRASE")
 
 # Constants
 SAMPLE_RATE = 48000
@@ -55,6 +194,9 @@ transcriptions = []
 detected_mood = []
 
 app = FastAPI()
+# Include the auth router so the /token endpoint is available
+app.include_router(auth_router)
+
 
 # CORS middleware
 app.add_middleware(
@@ -150,12 +292,54 @@ class ProjectARIAHandler:
         pass
 
 
+class ImageProcessor:
+    def __init__(
+        self,
+    ) -> None:
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        self.image_counter = 0
+
+    def detect_mood(self, detected_mood, websocket):
+        emotion_detector = FER(mtcnn=True)
+        while True:
+            try:
+                image = self.rgb_image["data"]
+                image = np.rot90(image, -1)
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                if image is None:
+                    break
+                analysis = emotion_detector.detect_emotions(image)
+                emotion, score = emotion_detector.top_emotion(image)
+                if analysis:
+                    mood = {
+                        "timestamp": self.rgb_image["timestamp"],
+                        "emotion": emotion,
+                        "score": score,
+                        "colour": colour_codes[emotion],
+                    }
+                    detected_mood.append(mood)
+                    data = {
+                        "transcription": None,
+                        "start_timestamp": self.rgb_image["timestamp"],
+                        "end_timestamp": self.rgb_image["timestamp"],
+                        "mood": mood,
+                    }
+                    print(data)
+                    asyncio.run(send_text_safe(websocket, data))
+                    continue
+            except Exception as e:
+                # print(f"No face detected: {e}")
+                continue
+
+
 class AudioProcessor:
     def __init__(self):
         self.lock = threading.Lock()
 
     def process_multi_channel_audio(self, audio_data, num_channels):
-        # print("Processing multi channel audio")
+        # print("Processing multi-channel audio")
         total_samples = len(audio_data)
         if total_samples % num_channels != 0:
             truncated_samples = total_samples - (total_samples % num_channels)
@@ -180,9 +364,11 @@ class AudioProcessor:
         max_val = np.max(np.abs(audio_data))
         return audio_data / max_val if max_val > 0 else audio_data
 
-    def transcribe_and_diarize_audio(self, model, audio_queue, websocket):
-        print("Transcribing audio")
+    def transcribe_audio(self, model, audio_queue, websocket):
+        # print("Transcribing audio")
         target_chunk_size = int(TARGET_SAMPLE_RATE * BUFFER_DURATION)
+        recognizer = KaldiRecognizer(model, TARGET_SAMPLE_RATE)
+
         while True:
             try:
                 audio_data = []
@@ -214,7 +400,25 @@ class AudioProcessor:
                     finally:
                         self.lock.release()
                     time.sleep(0.1)
+                # Convert the float32 audio data to int16 PCM data
+                # audio_data = np.array(audio_data, dtype=np.float32)
+                # audio_data = (audio_data * 32767).astype(np.int16)
+                # byte_data = audio_data.tobytes()
+                # # Only send the final transcription result
+                # if recognizer.AcceptWaveform(byte_data):
+                #     result = recognizer.Result()
+                #     transcription = json.loads(result)["text"]
 
+                #     data = {
+                #         "transcription": transcription,
+                #         "start_timestamp": start_audio_timestamp,
+                #         "end_timestamp": end_audio_timestamp,
+                #         "mood": None,
+                #     }
+
+                #     # Send the final transcription via WebSocket
+                #     print(data)
+                #     asyncio.run(send_text_safe(websocket, data))
                 if audio_data:
                     audio_data = np.array(audio_data, dtype=np.float32)
                     segments, _ = model.transcribe(
@@ -237,7 +441,7 @@ class AudioProcessor:
                     }
                     print(data)
                     asyncio.run(websocket.send_text(json.dumps(data)))
-                    # waveform = torch.tensor([audio_data], dtype=torch.float32)
+
             except Exception as e:
                 print(f"Error during transcription: {e}")
             finally:
@@ -245,7 +449,7 @@ class AudioProcessor:
 
 
 class StreamingClientObserver:
-    def __init__(self, audio_queue, audio_processor, websocket):
+    def __init__(self, audio_queue, audio_processor):
         self.start_audio_timestamp = None
         self.end_audio_timestamp = None
         self.audio_queue = audio_queue
@@ -254,11 +458,6 @@ class StreamingClientObserver:
         self.lock = threading.Lock()
         self.audio_processor = audio_processor
         self.rgb_image = {"data": None, "timestamp": None}
-        self.face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-        self.image_counter = 0
-        self.websocket = websocket
 
     def on_audio_received(self, audio_data: AudioData, record: AudioDataRecord):
 
@@ -298,42 +497,11 @@ class StreamingClientObserver:
         self.rgb_image["data"] = image
         self.rgb_image["timestamp"] = record.capture_timestamp_ns
 
-    def detect_mood(self, detected_mood, websocket):
-        emotion_detector = FER(mtcnn=True)
-        while True:
-            try:
-                image = self.rgb_image["data"]
-                image = np.rot90(image, -1)
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                if image is None:
-                    break
-                analysis = emotion_detector.detect_emotions(image)
-                emotion, score = emotion_detector.top_emotion(image)
-                if analysis:
-                    mood = {
-                        "timestamp": self.rgb_image["timestamp"],
-                        "emotion": emotion,
-                        "score": score,
-                        "colour": colour_codes[emotion],
-                    }
-                    detected_mood.append(mood)
-                    data = {
-                        "transcription": None,
-                        "start_timestamp": self.rgb_image["timestamp"],
-                        "end_timestamp": self.rgb_image["timestamp"],
-                        "mood": mood,
-                    }
-                    print(data)
-                    asyncio.run(send_text_safe(websocket, data))
-                    continue
-            except Exception as e:
-                # print(f"No face detected: {e}")
-                continue
-
 
 # Initialize global variables for threading and streaming
 audio_queue = Queue()
 audio_processor = AudioProcessor()
+image_processor = ImageProcessor()
 observer = None
 project_aria_handler = None
 transcription_thread = None
@@ -349,15 +517,15 @@ class StartStreamingRequest(BaseModel):
     profile_name: str = "profile18"
 
 
+# start_streaming and stop_streaming should only be accessible by doctors
 @app.post("/start_streaming")
-async def start_streaming(request: StartStreamingRequest):
+async def start_streaming(
+    request: StartStreamingRequest,
+    current_user: TokenData = Depends(get_current_doctor),
+):
     global transcription_thread, detection_thread, observer, streaming_client, streaming_manager, device_client, device, project_aria_handler
 
-    args = argparse.Namespace(
-        streaming_interface=request.interface,
-        update_iptables=False,
-        profile_name=request.profile_name,
-    )
+    args = parse_args()
     project_aria_handler = ProjectARIAHandler(args)
     [streaming_client, streaming_manager, device_client, device] = (
         project_aria_handler.setup_project_aria()
@@ -373,7 +541,7 @@ async def start_streaming(request: StartStreamingRequest):
 
 
 @app.post("/stop_streaming")
-async def stop_streaming():
+async def stop_streaming(current_user: TokenData = Depends(get_current_doctor)):
     global transcription_thread, detection_thread, streaming_client, streaming_manager, device_client, device
 
     try:
@@ -399,7 +567,6 @@ async def connect():
     database = DatabaseConnection(uri)
     try:
         connection = database.connect()
-        print(connection)
         if connection:
             return {"status": "success", "message": "Connected to database"}
 
@@ -423,7 +590,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            observer = StreamingClientObserver(audio_queue, audio_processor, websocket)
+            observer = StreamingClientObserver(audio_queue, audio_processor)
             streaming_client.set_streaming_client_observer(observer)
 
             print("Start listening to audio and image data")
@@ -431,7 +598,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             model = WhisperModel("tiny.en", device="cpu", compute_type="float32")
             transcription_thread = threading.Thread(
-                target=audio_processor.transcribe_and_diarize_audio,
+                target=audio_processor.transcribe_audio,
                 args=(model, audio_queue, websocket),
                 daemon=True,
             )
@@ -439,7 +606,7 @@ async def websocket_endpoint(websocket: WebSocket):
             print("Transcription thread started")
 
             detection_thread = threading.Thread(
-                target=observer.detect_mood,
+                target=image_processor.detect_mood,
                 args=(detected_mood, websocket),
                 daemon=True,
             )
@@ -451,6 +618,53 @@ async def websocket_endpoint(websocket: WebSocket):
         print("Client disconnected")
     finally:
         await websocket.close()
+
+
+@app.get("/generateSummary")
+async def generateSummary():
+    try:
+        session_id = "66bb953a6e46d0475d592839"
+
+        # Properly escape the session_id for JSON
+        session_data = json.dumps({"session_id": session_id})
+
+        print(session_data)
+
+        # Define the SSH command
+        command = f"""ssh -t msk2@csgate.ucc.ie ssh msk2@csg25-04.ucc.ie curl -X POST http://localhost:8000/generate -H \"Content-Type: application/json\" -d '{session_data}'"""
+
+        # Run the SSH command with pexpect
+        child = pexpect.spawn(command, timeout=60)  # Increase timeout to 60 seconds
+
+        # Handle the passphrase prompts
+        child.expect("Enter passphrase for key")
+        child.sendline(SSH_PASSPHRASE)
+        child.expect("Enter passphrase for key")
+        child.sendline(SSH_PASSPHRASE)
+
+        # Wait for the command to finish and capture the output
+        child.expect(pexpect.EOF)
+        output = child.before.decode("utf-8")
+
+        # Extract the JSON response from the output
+        json_start = output.find("{")
+        json_end = output.rfind("}") + 1
+        json_string = output[json_start:json_end]
+
+        # Clean the JSON string
+        json_string = json_string.replace("\\", "")
+
+        try:
+            json_response = json.loads(json_string)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=500, detail="Failed to decode JSON response"
+            )
+
+        return {"output": json_response}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Command failed: {str(e)}")
 
 
 if __name__ == "__main__":

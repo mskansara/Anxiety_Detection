@@ -9,6 +9,7 @@ class DatabaseConnection:
     def connect(self):
         try:
             client = MongoClient(self.uri, server_api=ServerApi("1"))
+            print(client)
             client.admin.command("ping")
             return True
         except Exception as e:

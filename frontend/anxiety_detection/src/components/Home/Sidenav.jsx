@@ -9,6 +9,7 @@ import { styled } from '@mui/material/styles';
 import { useLocation, useNavigate } from 'react-router-dom';
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import logo from '../../images/logo.png';
+import axios from 'axios';
 
 
 const drawerWidth = 80;
@@ -39,15 +40,35 @@ function Sidenav() {
     const location = useLocation();
     const navigate = useNavigate();
 
+    const logout = async () => {
+        try {
+            const token = localStorage.getItem("token");
+
+            // Optional: Call the backend logout endpoint
+            await axios.post("http://localhost:8000/logout", {}, {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            });
+
+            // Remove token from local storage
+            localStorage.removeItem("token");
+            localStorage.removeItem("role");
+
+            // Redirect to login page
+            navigate("/login");
+        } catch (error) {
+            console.error("Logout failed", error);
+            // Handle logout failure (e.g., show error message)
+        }
+    };
 
     // Function to determine if the route matches the current location
     const isRouteActive = (route) => {
         return location.pathname === route;
     };
 
-    const logout = () => {
-        console.log("Logout")
-    }
+
 
     return (
         <Box sx={{ display: 'flex', }}>
@@ -93,7 +114,9 @@ function Sidenav() {
                                         justifyContent: 'center',
                                         px: 2.5,
                                         flexDirection: 'column',
+
                                     }}
+
                                 >
                                     <ListItemIcon sx={{ minWidth: 0, justifyContent: 'center', size: 'large', color: isRouteActive(item.route) ? '#E2E2B6' : '#E2E2B6' }}>
                                         {item.icon}

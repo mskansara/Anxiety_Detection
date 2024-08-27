@@ -20,34 +20,47 @@ function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatie
     const startStreaming = async () => {
         try {
             setLoading(true);
+            const token = localStorage.getItem('token'); // Retrieve JWT token from localStorage
             const response = await axios.post('http://localhost:8000/start_streaming', {
                 interface: 'usb',
                 profile_name: 'profile18'
+            }, {
+                headers: {
+                    'Authorization': `Bearer ${token}` // Pass the token in the Authorization header
+                }
             });
             setLoading(false);
             if (response.data.status === "Streaming started") {
-                // setIsStreaming(true);
-                // alert('Streaming started');
+                // Handle the successful start of streaming
                 return {
                     "status": "success"
-                }
+                };
             }
         } catch (error) {
+            setLoading(false);
             console.error('Error starting streaming:', error);
             alert('Failed to start streaming');
         }
     };
     const startSession = async () => {
         let sessionStatus = await startStreaming()
-        if (sessionStatus['status'] == "success") {
-            setIsSession(true)
-            setIsSessionCompleted(false)
-            console.log("Session started")
-        } else {
-            setIsSession(false)
-            setIsSessionCompleted(false)
-            console.log("Failed to start the session")
+        try {
+            if (sessionStatus['status'] == "success") {
+                setIsSession(true)
+                setIsSessionCompleted(false)
+                console.log("Session started")
+            } else {
+                setIsSession(false)
+                setIsSessionCompleted(false)
+                console.log("Failed to start the session")
+            }
+        } catch (error) {
+            return
         }
+
+        // setIsSession(true)
+        // setIsSessionCompleted(false)
+
 
     }
     return (

@@ -15,7 +15,7 @@ import jiwer
 SAMPLE_RATE = 48000  # Original sample rate from live streaming
 TARGET_SAMPLE_RATE = 16000  # Target sample rate for Whisper
 NUM_CHANNELS = 7  # Number of audio channels
-BUFFER_DURATION = 10  # Buffer duration for processing in seconds
+BUFFER_DURATION = 60  # Buffer duration for processing in seconds
 
 
 def parse_args() -> argparse.Namespace:
@@ -229,22 +229,22 @@ def checkAccuracy(finalTranscription, transcriptionFile):
         fileTranscription = file.read().replace("\n", " ").strip()
 
     # Print both transcriptions for debugging purposes
-    print("Combined Transcription from the list:")
-    print(combinedTranscription)
-    print("\nTranscription from the file:")
-    print(fileTranscription)
+    # print("Combined Transcription from the list:")
+    # print(combinedTranscription)
+    # print("\nTranscription from the file:")
+    # print(fileTranscription)
 
     # Calculate Word Error Rate (WER)
     wer = jiwer.wer(fileTranscription, combinedTranscription)
     print(f"Word Error Rate (WER): {wer:.2%}")
 
     # Optional: Print differences if needed
-    if combinedTranscription != fileTranscription:
-        print("\nDifferences found:")
-        print("Combined Transcription:")
-        print(combinedTranscription)
-        print("\nFile Transcription:")
-        print(fileTranscription)
+    # if combinedTranscription != fileTranscription:
+    #     print("\nDifferences found:")
+    #     print("Combined Transcription:")
+    #     print(combinedTranscription)
+    #     print("\nFile Transcription:")
+    #     print(fileTranscription)
 
 
 def main():
@@ -255,7 +255,7 @@ def main():
 
     match testCase:
         case "1":
-            transcriptFile = transcriptFile + "accent3.txt"
+            transcriptFile = transcriptFile + "accent2.txt"
         case "2":
             print("Test case 2 selected")
         case _:

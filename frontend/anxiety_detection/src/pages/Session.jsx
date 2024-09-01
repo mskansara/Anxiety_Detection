@@ -14,6 +14,7 @@ function Session() {
         { id: "03", name: "Manthan Kansara" },
         { id: "03", name: "Manthan Kansara" }
     ]);
+    const [sessionId, setSessionId] = useState('')
     const [patient, setPatient] = useState();
 
     return (
@@ -34,6 +35,7 @@ function Session() {
                             patientList={patientList}
                             setPatient={setPatient}
                             patient={patient}
+                            setSessionId={setIsSession}
                         />
                     )}
                     {(isSession && !isSessionCompleted) && (
@@ -41,6 +43,7 @@ function Session() {
                             setIsSession={setIsSession}
                             setIsSessionCompleted={setIsSessionCompleted}
                             patient={patient}
+                            sessionId={sessionId}
                         />
                     )}
                     {(!isSession && isSessionCompleted) && (
@@ -48,6 +51,7 @@ function Session() {
                             setIsSession={setIsSession}
                             setIsSessionCompleted={setIsSessionCompleted}
                             patient={patient}
+                            sessionId={sessionId}
                         />
                     )}
                 </Box>

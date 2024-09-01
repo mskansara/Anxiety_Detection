@@ -22,11 +22,14 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     role: str
+    id: str
 
 
 class TokenData(BaseModel):
     email: str
     role: str
+    id: str
+    name: str
 
 
 async def get_user_from_db(email: str):
@@ -36,6 +39,7 @@ async def get_user_from_db(email: str):
     user = await db.doctors.find_one({"contact.email": email})
     if user:
         # Assign role as 'doctor' if found in doctors collection
+        user["_id"] = str(user["_id"])
         user["role"] = "doctor"
         return user
 
@@ -43,6 +47,7 @@ async def get_user_from_db(email: str):
     user = await db.patients.find_one({"contact.email": email})
     if user:
         # Assign role as 'patient' if found in patients collection
+        user["_id"] = str(user["_id"])
         user["role"] = "patient"
         return user
 
@@ -51,8 +56,6 @@ async def get_user_from_db(email: str):
 
 @router.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    print(form_data.username)
-    print(form_data.password)
     response = requests.post(
         ATLAS_LOGIN_URL,
         json={
@@ -63,7 +66,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
     if response.status_code != 200:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=response.status_code,
             detail="Incorrect email or password",
         )
 
@@ -75,8 +78,15 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         raise HTTPException(status_code=404, detail="User not found")
 
     role = user["role"]
+    id = user["_id"]
+    print(user)
 
-    return {"access_token": access_token, "token_type": "bearer", "role": role}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": role,
+        "id": id,
+    }
 
 
 # OAuth2 scheme to protect routes
@@ -99,6 +109,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     # Extract email from the user profile
     user_profile = response.json()
     email = user_profile["data"]["email"]
+    print(user_profile)
 
     # Fetch user from your MongoDB collection (either doctors or patients)
     user = await get_user_from_db(email)
@@ -107,9 +118,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
     # Add the role to the user's details
     role = user.get("role", "unknown")  # Default to 'unknown' if role isn't found
-
+    _id = user.get("_id", "")
+    print(user)
     # Return user details including access token, role, and email
-    return {"email": email, "access_token": token, "role": role}
+    return {"email": email, "access_token": token, "role": role, "_id": _id}
 
 
 async def get_current_doctor(current_user: TokenData = Depends(get_current_user)):

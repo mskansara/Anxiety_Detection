@@ -54,6 +54,7 @@ function Sidenav() {
             // Remove token from local storage
             localStorage.removeItem("token");
             localStorage.removeItem("role");
+            localStorage.removeItem("_id")
 
             // Redirect to login page
             navigate("/login");

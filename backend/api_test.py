@@ -25,153 +25,32 @@ from fastapi.middleware.cors import CORSMiddleware
 import json
 from vosk import Model, KaldiRecognizer
 import pexpect
+import re
 
 from database_connection import DatabaseConnection
 
 from auth import router as auth_router
 from auth import get_current_doctor, TokenData
 import shlex
+from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+from model import Doctor, Patient, Session, PyObjectId
+from typing import List, Dict, Any
+from datetime import datetime
 
-dummy_data = {
-    "transcriptions": [
-        {
-            "start_timestamp": "940710969012",
-            "end_timestamp": "941510981137",
-            "transcription": "Patient: I feel anxious sometimes. Doctor: Can you tell me more about that?",
-        },
-        {
-            "start_timestamp": "941520981138",
-            "end_timestamp": "942310971050",
-            "transcription": "Patient: It's like there's always this feeling of unease, especially in social situations. Doctor: When did you first notice these feelings?",
-        },
-        {
-            "start_timestamp": "942320971051",
-            "end_timestamp": "943010971550",
-            "transcription": "Patient: I think it started in high school. I used to get really nervous before class presentations. Doctor: Have these feelings of anxiety gotten better or worse over time?",
-        },
-        {
-            "start_timestamp": "943020971551",
-            "end_timestamp": "943810968887",
-            "transcription": "Patient: They have gotten worse. Now, even going to the grocery store makes me anxious. Doctor: That sounds challenging. Have you found any strategies that help manage your anxiety?",
-        },
-        {
-            "start_timestamp": "943820968888",
-            "end_timestamp": "944510969387",
-            "transcription": "Patient: Sometimes deep breathing helps, but not always. Doctor: It's good that you have a coping mechanism. Have you tried any other techniques or therapies?",
-        },
-        {
-            "start_timestamp": "944520969388",
-            "end_timestamp": "945810973062",
-            "transcription": "Patient: I tried meditation, but I find it hard to focus. Doctor: Meditation can be difficult at first. It might help to start with shorter sessions and gradually increase the time.",
-        },
-        {
-            "start_timestamp": "945820973063",
-            "end_timestamp": "946710972300",
-            "transcription": "Patient: I will try that. Doctor: Do you have a support system you can rely on, like friends or family?",
-        },
-        {
-            "start_timestamp": "946720972301",
-            "end_timestamp": "947710972425",
-            "transcription": "Patient: My family is supportive, but they don't really understand what I'm going through. Doctor: It can be hard for others to understand. Have you considered joining a support group?",
-        },
-        {
-            "start_timestamp": "947720972426",
-            "end_timestamp": "948710974850",
-            "transcription": "Patient: I haven't, but maybe I should. Doctor: Support groups can provide a sense of community and understanding. It might be worth looking into.",
-        },
-        {
-            "start_timestamp": "948720974851",
-            "end_timestamp": "949610976512",
-            "transcription": "Patient: I'll think about it. Doctor: That's good to hear. Remember, you're not alone in this, and there are people who can help.",
-        },
-        {
-            "start_timestamp": "949620976513",
-            "end_timestamp": "950610966887",
-            "transcription": "Patient: Thank you, doctor. Doctor: You're welcome. Let's continue to work on this together.",
-        },
-    ],
-    "detected_mood": [
-        {
-            "timestamp": "940710969012",
-            "emotion": "neutral",
-            "score": 0.74,
-            "colour": "white",
-        },
-        {
-            "timestamp": "941520981138",
-            "emotion": "anxious",
-            "score": 0.65,
-            "colour": "orange",
-        },
-        {
-            "timestamp": "942320971051",
-            "emotion": "nervous",
-            "score": 0.72,
-            "colour": "yellow",
-        },
-        {
-            "timestamp": "943020971551",
-            "emotion": "anxious",
-            "score": 0.77,
-            "colour": "orange",
-        },
-        {
-            "timestamp": "943820968888",
-            "emotion": "frustrated",
-            "score": 0.68,
-            "colour": "red",
-        },
-        {
-            "timestamp": "944520969388",
-            "emotion": "neutral",
-            "score": 0.70,
-            "colour": "white",
-        },
-        {
-            "timestamp": "945820973063",
-            "emotion": "hopeful",
-            "score": 0.66,
-            "colour": "blue",
-        },
-        {
-            "timestamp": "946720972301",
-            "emotion": "neutral",
-            "score": 0.67,
-            "colour": "white",
-        },
-        {
-            "timestamp": "947720972426",
-            "emotion": "considerate",
-            "score": 0.64,
-            "colour": "green",
-        },
-        {
-            "timestamp": "948720974851",
-            "emotion": "thoughtful",
-            "score": 0.71,
-            "colour": "blue",
-        },
-        {
-            "timestamp": "949620976513",
-            "emotion": "grateful",
-            "score": 0.78,
-            "colour": "blue",
-        },
-        {
-            "timestamp": "950610966887",
-            "emotion": "relieved",
-            "score": 0.81,
-            "colour": "blue",
-        },
-    ],
-}
 
+# API Endpoints
 # Load environment variables
 load_dotenv()
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
 MONGODB_AUTH = os.getenv("MONGODB_AUTH")
-uri = f"mongodb+srv://manthankansara7:{MONGODB_AUTH}@cluster0.4ubii7g.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+# uri = f"mongodb+srv://manthankansara7:{MONGODB_AUTH}@cluster0.4ubii7g.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 SSH_PASSPHRASE = os.getenv("SSH_PASSPHRASE")
+uri = os.getenv("DB_URL")
+# MongoDB connection
+client = AsyncIOMotorClient(uri)
+db = client[os.getenv("DB_NAME")]
+print(client)
 
 # Constants
 SAMPLE_RATE = 48000
@@ -620,51 +499,262 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close()
 
 
+TIMEOUT = 60000  # Timeout in seconds
+
+
+def establish_ssh_tunnel():
+    try:
+        # Step 1: Establish the SSH tunnel
+        print("Establishing SSH tunnel...")
+        ssh_command = "ssh -t msk2@csgate.ucc.ie ssh msk2@csg25-04.ucc.ie"
+
+        child = pexpect.spawn(ssh_command, timeout=TIMEOUT, encoding="utf-8")
+        child.expect("Enter passphrase for key '/Users/manthankansara/.ssh/id_rsa':")
+        child.sendline(SSH_PASSPHRASE)
+
+        child.expect("Enter passphrase for key '/users/msccs2024/msk2/.ssh/id_rsa':")
+        child.sendline(SSH_PASSPHRASE)
+
+        # After successful authentication, you should get a shell prompt
+        child.expect(r"\$")
+
+        print("SSH tunnel established successfully.")
+        return child
+    except pexpect.exceptions.EOF as e:
+        print(f"Unexpected EOF during SSH tunnel establishment: {str(e)}")
+        child.close()
+        raise HTTPException(status_code=500, detail="SSH connection failed (EOF)")
+    except pexpect.exceptions.TIMEOUT as e:
+        print(f"Timeout during SSH tunnel establishment: {str(e)}")
+        child.close()
+        raise HTTPException(status_code=500, detail="SSH connection failed (timeout)")
+
+
+def prettify_output(raw_output):
+    # Replace escape sequences for newlines with actual newlines
+    formatted_output = raw_output.replace("\\n", "\n")
+
+    # Replace double backslashes with single backslashes
+    formatted_output = formatted_output.replace("\\\\", "\\")
+
+    # Remove unnecessary parts (like the extra escape sequences)
+    formatted_output = formatted_output.replace("```python", "").replace("```", "")
+
+    # Optional: Add additional formatting if needed (e.g., indentation)
+    formatted_output = formatted_output.replace(
+        "\\t", "    "
+    )  # Replace tabs with spaces
+
+    # Return the formatted output
+    return formatted_output.strip()
+
+
+def run_command(child, command):
+    try:
+        print(f"Running command: {command}")
+        child.sendline(command)
+
+        child.expect(r"\$", timeout=TIMEOUT)
+        output = child.before
+
+        # Print the extracted key points
+        # print(final_output)
+        return output
+    except pexpect.exceptions.TIMEOUT as e:
+        print(f"Timeout during command execution: {str(e)}")
+        child.close()
+        raise HTTPException(
+            status_code=500, detail="Command execution failed (timeout)"
+        )
+    except pexpect.exceptions.EOF as e:
+        print(f"Unexpected EOF during command execution: {str(e)}")
+        child.close()
+        raise HTTPException(status_code=500, detail="Command execution failed (EOF)")
+
+
 @app.get("/generateSummary")
 async def generateSummary():
     try:
-        session_id = "66bb953a6e46d0475d592839"
+        session_id = "66d0602937f3f9caafb68345"
+        curl_command = f"""curl -X POST http://localhost:8000/generate -H "Content-Type: application/json" -d '{{\"session_id\": \"{session_id}\"}}'"""
 
-        # Properly escape the session_id for JSON
-        session_data = json.dumps({"session_id": session_id})
+        # Establish the SSH tunnel (this is where ssh_tunneling is happening)
+        child = establish_ssh_tunnel()
 
-        print(session_data)
+        # Run the curl command on the remote server
+        output = run_command(child, curl_command)
+        print(output)
+        # Close the SSH session
+        child.sendline("exit")
+        child.close()
+        # print(f"Command output: {output}")
+        start = output.find("summary:")
+        end = output.find("```python")
+        # Extract the "Key points" section
 
-        # Define the SSH command
-        command = f"""ssh -t msk2@csgate.ucc.ie ssh msk2@csg25-04.ucc.ie curl -X POST http://localhost:8000/generate -H \"Content-Type: application/json\" -d '{session_data}'"""
-
-        # Run the SSH command with pexpect
-        child = pexpect.spawn(command, timeout=60)  # Increase timeout to 60 seconds
-
-        # Handle the passphrase prompts
-        child.expect("Enter passphrase for key")
-        child.sendline(SSH_PASSPHRASE)
-        child.expect("Enter passphrase for key")
-        child.sendline(SSH_PASSPHRASE)
-
-        # Wait for the command to finish and capture the output
-        child.expect(pexpect.EOF)
-        output = child.before.decode("utf-8")
-
-        # Extract the JSON response from the output
-        json_start = output.find("{")
-        json_end = output.rfind("}") + 1
-        json_string = output[json_start:json_end]
-
-        # Clean the JSON string
-        json_string = json_string.replace("\\", "")
-
+        key_points_section = output[start:end].strip()
+        final_output = prettify_output(key_points_section)
+        print(final_output)
         try:
-            json_response = json.loads(json_string)
+            summary_response = json.loads(final_output)
         except json.JSONDecodeError:
             raise HTTPException(
                 status_code=500, detail="Failed to decode JSON response"
             )
 
-        return {"output": json_response}
+        # Update the session document with the generated summary
+        result = await db.sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {"$set": {"summary": final_output}},
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(
+                status_code=404, detail="Session not found or not updated"
+            )
+
+        # Fetch the updated session document to return to the frontend
+        updated_session = await db.sessions.find_one({"_id": ObjectId(session_id)})
+        if updated_session is None:
+            raise HTTPException(
+                status_code=404, detail="Session not found after update"
+            )
+
+        return {"output": final_output}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Command failed: {str(e)}")
+
+
+@app.post("/doctors/", response_model=Doctor)
+async def create_doctor(doctor: Doctor):
+    doctor = doctor.dict(by_alias=True)
+    result = await db.doctors.insert_one(doctor)
+    doctor["_id"] = result.inserted_id
+    return doctor
+
+
+@app.post("/patients/", response_model=Patient)
+async def create_patient(patient: Patient):
+    patient = patient.dict(by_alias=True)
+    result = await db.patients.insert_one(patient)
+    patient["_id"] = result.inserted_id
+    return patient
+
+
+class CreateSessionRequest(BaseModel):
+    doctor_id: str
+    patient_id: str
+
+
+@app.post("/sessions")
+async def create_session(session_data: CreateSessionRequest):
+    try:
+        session = {
+            "doctor_id": ObjectId(session_data.doctor_id),
+            "patient_id": ObjectId(session_data.patient_id),
+            "session_date": datetime.now(),
+            "session_data": {"transcriptions": [], "detected_mood": []},
+            "summary": "",
+        }
+        result = await db.sessions.insert_one(session)
+
+        if result.inserted_id:
+            return {"session_id": str(result.inserted_id)}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create session")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.get("/doctors/{doctor_id}", response_model=Doctor)
+async def get_doctor(doctor_id: str):
+    doctor = await db.doctors.find_one({"_id": ObjectId(doctor_id)})
+    if doctor is None:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    return doctor
+
+
+@app.get("/patients/{patient_id}", response_model=Patient)
+async def get_patient(patient_id: str):
+    patient = await db.patients.find_one({"_id": ObjectId(patient_id)})
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return patient
+
+
+@app.get("/sessions/{session_id}", response_model=Session)
+async def get_session(session_id: str):
+    session = await db.sessions.find_one({"_id": ObjectId(session_id)})
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+class UpdateSessionRequest(BaseModel):
+    session_id: str
+    transcriptions: List[Dict[str, Any]]
+    detected_mood: List[Dict[str, Any]]
+
+
+@app.post("/sessions/update")
+async def update_session(session_data: UpdateSessionRequest):
+    try:
+        # Convert session_id to ObjectId
+        print(session_data)
+        session_id = ObjectId(session_data.session_id)
+
+        # Update the session document in the database
+        update_data = {
+            "$set": {
+                "session_data.transcriptions": session_data.transcriptions,
+                "session_data.detected_mood": session_data.detected_mood,
+            }
+        }
+
+        result = await db.sessions.update_one({"_id": session_id}, update_data)
+
+        if result.modified_count == 1:
+            return {"status": "success", "message": "Session updated successfully"}
+        else:
+            raise HTTPException(
+                status_code=404, detail="Session not found or data not modified"
+            )
+    except Exception as e:
+        print(f"Error updating session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+class DoctorIDRequest(BaseModel):
+    doctor_id: str
+
+
+@app.post("/doctors/patients", response_model=List[Patient])
+async def get_patients_by_doctor(request: DoctorIDRequest):
+    doctor = await db.doctors.find_one({"_id": ObjectId(request.doctor_id)})
+    if doctor is None:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Fetch patients using the list of patient ObjectIds from the doctor's document
+    patient_ids = doctor.get("patients", [])
+    patients = await db.patients.find({"_id": {"$in": patient_ids}}).to_list(
+        length=None
+    )
+
+    return [Patient(**patient) for patient in patients]
+
+
+@app.get("/doctors", response_model=List[Doctor])
+async def get_all_doctors():
+    doctors_cursor = db.doctors.find()
+    doctors = await doctors_cursor.to_list(length=None)
+    # print(doctors)
+    if not doctors:
+        print("No doctors found")  # Debug output
+    else:
+        print(f"Found {len(doctors)} doctors")  # Debug output
+    return doctors
 
 
 if __name__ == "__main__":

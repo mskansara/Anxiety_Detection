@@ -67,10 +67,10 @@ const colorizeSummary = (summary) => {
     });
 };
 
-function SessionSummary({ setIsSession, setIsSessionCompleted, patient }) {
+function SessionSummary({ setIsSession, setIsSessionCompleted, patient, sessionId }) {
     const [isEditing, setIsEditing] = useState(false);
     const [summary, setSummary] = useState(dummySummary);
-
+    const session_id = localStorage.getItem('session_id')
     const saveSession = () => {
         setIsSession(false);
         setIsSessionCompleted(false);

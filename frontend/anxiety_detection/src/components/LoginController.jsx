@@ -37,10 +37,14 @@ export default function SignIn() {
 			const token = response.data.access_token;
 			const decodedToken = jwtDecode(token);
 			const userRole = response.data.role;
+			const userId = response.data.id
+			console.log(response)
 			console.log(userRole)
+			console.log(userId)
 			// Store the token in localStorage
 			localStorage.setItem("token", token);
 			localStorage.setItem("role", userRole)
+			localStorage.setItem('id', userId);
 
 			if (userRole === "doctor") {
 				navigate(`/session`);

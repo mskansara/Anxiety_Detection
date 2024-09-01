@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
-import SessionHeader from './SessionHeader'
-import { Box, Button, Typography } from '@mui/material'
+import React, { useState, useEffect } from 'react';
+import SessionHeader from './SessionHeader';
+import { Box, Button, Typography } from '@mui/material';
 import InputLabel from '@mui/material/InputLabel';
 import MenuItem from '@mui/material/MenuItem';
 import FormControl from '@mui/material/FormControl';
@@ -9,10 +9,38 @@ import axios from 'axios';
 import CircularProgress from '@mui/material/CircularProgress';
 import Backdrop from '@mui/material/Backdrop';
 
-
-
-function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatient, patient }) {
+function NewSession({ setIsSession, setIsSessionCompleted, setPatient, patient, setSessionId }) {
     const [loading, setLoading] = useState(false);
+    const [patientList, setPatientList] = useState([]);
+
+
+    useEffect(() => {
+        const fetchPatients = async () => {
+            try {
+                const token = localStorage.getItem('token'); // Retrieve JWT token from localStorage
+                const doctorId = localStorage.getItem('id')// Replace with the actual doctor ID or fetch it from the logged-in user details
+                console.log(doctorId)
+                const response = await axios.post(`http://localhost:8000/doctors/patients`,
+                    {
+                        doctor_id: doctorId
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+                console.log(response)
+
+                setPatientList(response.data);
+            } catch (error) {
+                console.error('Error fetching patients:', error);
+                alert('Failed to fetch patients');
+            }
+        };
+
+        fetchPatients();
+    }, []);
+
     const handleChange = (event) => {
         setPatient(event.target.value);
     };
@@ -31,7 +59,6 @@ function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatie
             });
             setLoading(false);
             if (response.data.status === "Streaming started") {
-                // Handle the successful start of streaming
                 return {
                     "status": "success"
                 };
@@ -42,27 +69,45 @@ function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatie
             alert('Failed to start streaming');
         }
     };
+
     const startSession = async () => {
-        let sessionStatus = await startStreaming()
+        let sessionStatus = await startStreaming();
+
         try {
-            if (sessionStatus['status'] == "success") {
-                setIsSession(true)
-                setIsSessionCompleted(false)
-                console.log("Session started")
+            if (sessionStatus && sessionStatus['status'] === "success") {
+                const doctorId = localStorage.getItem("id");
+                const patientId = patient._id;
+                console.log(doctorId)
+                console.log(patientId)
+
+                const response = await axios.post("http://localhost:8000/sessions", {
+                    'doctor_id': doctorId,
+                    'patient_id': patientId
+                });
+
+                if (response.data.session_id) {
+                    setIsSession(true);
+                    setIsSessionCompleted(false);
+                    console.log("Session started, Session ID:", response.data.session_id);
+                    setSessionId(response.data.session_id)
+                    localStorage.setItem('session_id', response.data.session_id)
+                    // You may want to store the session_id in state or localStorage if needed
+                } else {
+                    setIsSession(false);
+                    setIsSessionCompleted(false);
+                    console.log("Failed to create a session");
+                }
             } else {
-                setIsSession(false)
-                setIsSessionCompleted(false)
-                console.log("Failed to start the session")
+                setIsSession(false);
+                setIsSessionCompleted(false);
+                console.log("Failed to start the session");
             }
         } catch (error) {
-            return
+            return;
         }
 
-        // setIsSession(true)
-        // setIsSessionCompleted(false)
+    };
 
-
-    }
     return (
         <>
             <Box sx={{ p: 4 }}>
@@ -79,7 +124,7 @@ function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatie
                         >
                             {
                                 patientList.map((data, index) => (
-                                    <MenuItem value={data}>{data.id} - {data.name}</MenuItem>
+                                    <MenuItem key={index} value={data}>{data._id} - {data.name}</MenuItem>
                                 ))
                             }
                         </Select>
@@ -90,7 +135,6 @@ function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatie
                     <Backdrop
                         sx={{ color: '#fff', zIndex: (theme) => theme.zIndex.drawer + 1 }}
                         open={loading}
-                    // onClick={handleClose}
                     >
                         <CircularProgress value={100} />
                     </Backdrop>
@@ -104,10 +148,8 @@ function NewSession({ setIsSession, setIsSessionCompleted, patientList, setPatie
                     </Button>
                 )}
             </Box>
-
         </>
-
-    )
+    );
 }
 
-export default NewSession
+export default NewSession;

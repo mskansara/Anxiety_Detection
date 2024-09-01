@@ -4,9 +4,10 @@ import axios from 'axios';
 import CircularProgress from '@mui/material/CircularProgress';
 import Backdrop from '@mui/material/Backdrop';
 
-function CurrentSession({ setIsSession, setIsSessionCompleted, patient }) {
+function CurrentSession({ setIsSession, setIsSessionCompleted, patient, sessionId }) {
     const [loading, setLoading] = useState(false);
     const [transcriptions, setTranscriptions] = useState([]);
+    const [currentSessionId, setCurrentSessionId] = useState('')
     const websocketRef = useRef(null);
     const colorCodes = {
         neutral: 'black',
@@ -17,6 +18,7 @@ function CurrentSession({ setIsSession, setIsSessionCompleted, patient }) {
     };
 
     useEffect(() => {
+        setCurrentSessionId(currentSessionId)
         if (patient) {
             websocketRef.current = new WebSocket('ws://localhost:8000/ws');
 
@@ -117,17 +119,37 @@ function CurrentSession({ setIsSession, setIsSessionCompleted, patient }) {
 
     const stopSession = async () => {
         let sessionStatus = await stopStreaming();
+
         if (sessionStatus['status'] === "success") {
-            setIsSession(false);
-            setIsSessionCompleted(true);
-            console.log("Session stopped");
+            const session_id = localStorage.getItem('session_id')
+            const sessionData = {
+                session_id: session_id, // Pass the current session ID
+                transcriptions: sessionStatus.transcriptions, // Transcriptions gathered during the session
+                detected_mood: sessionStatus.detected_mood, // Detected mood data
+            };
+            const token = localStorage.getItem('token');
+            // Send the data to update the session
+            const updateSessionResponse = await axios.post('http://localhost:8000/sessions/update', sessionData, {
+                headers: {
+                    'Authorization': `Bearer ${token}` // Pass the token in the Authorization header
+                }
+            });
+
+            if (updateSessionResponse.data.status === "success") {
+                setIsSession(false);
+                setIsSessionCompleted(true);
+                console.log("Session stopped and data saved successfully");
+            } else {
+                console.error("Failed to update session data");
+            }
         } else {
             setIsSession(true);
             setIsSessionCompleted(false);
             console.log("Failed to stop the session");
         }
-        // setIsSession(false)
-        // setIsSessionCompleted(true)
+        const response = await axios.get('http://localhost:8000/generateSummary')
+        console.log(response)
+
     };
 
     return (

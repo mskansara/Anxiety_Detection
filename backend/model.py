@@ -1,6 +1,6 @@
+from bson import ObjectId
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
-from bson import ObjectId
 from datetime import datetime
 
 
@@ -10,14 +10,20 @@ class PyObjectId(ObjectId):
         yield cls.validate
 
     @classmethod
-    def validate(cls, v):
+    def validate(cls, v, field=None):  # Accept the extra positional argument
+        if isinstance(v, ObjectId):
+            return v
         if not ObjectId.is_valid(v):
-            raise ValueError("Invalid objectid")
+            raise ValueError("Invalid ObjectId")
         return ObjectId(v)
 
     @classmethod
-    def __modify_schema__(cls, field_schema):
-        field_schema.update(type="string")
+    def __get_pydantic_json_schema__(cls, schema, handler):
+        schema.update(type="string")
+        return schema
+
+    def __str__(self):
+        return str(self)
 
 
 class Contact(BaseModel):
@@ -34,6 +40,7 @@ class Patient(BaseModel):
 
     class Config:
         allow_population_by_field_name = True
+        arbitrary_types_allowed = True
         json_encoders = {ObjectId: str}
 
 
@@ -46,16 +53,19 @@ class Doctor(BaseModel):
 
     class Config:
         allow_population_by_field_name = True
+        arbitrary_types_allowed = True
         json_encoders = {ObjectId: str}
 
 
 class Session(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
-    patient_id: PyObjectId
-    doctor_id: PyObjectId
-    session_date: datetime
+    patient_id: str
+    doctor_id: str
+    session_date: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    session_data: Optional[dict] = {"transcriptions": [], "detected_mood": []}
     summary: str
 
     class Config:
         allow_population_by_field_name = True
+        arbitrary_types_allowed = True
         json_encoders = {ObjectId: str}

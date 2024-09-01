@@ -13,7 +13,6 @@ This project is designed to manage patient sessions in a psychologist's clinic, 
   - [Running the Backend Server](#running-the-backend-server)
   - [Running the Frontend Server](#running-the-frontend-server)
 - [API Endpoints](#api-endpoints)
-- [Project Structure](#project-structure)
 
 ## Features
 
@@ -119,21 +118,3 @@ This project is designed to manage patient sessions in a psychologist's clinic, 
 - `POST /sessions/`: Create a new session.
 - `GET /sessions/{session_id}`: Retrieve session details by ID.
 - `GET /generateSummary`: Generate and update the session summary.
-
-## Project Structure
-anxiety-detection-system/
-│
-├── backend/
-│   ├── api_test.py             # Main FastAPI backend code
-│   ├── model.py                # Pydantic models for database entities
-│   ├── requirements.txt        # Python dependencies
-│   ├── .env                    # Environment variables (not included in the repo)
-│   └── …                     # Other backend files
-│
-└── frontend/
-├── src/
-│   ├── components/
-│   │   └── NewSession.js   # NewSession React component
-│   └── …                 # Other frontend files
-├── package.json            # Node.js dependencies
-└── …                     # Other frontend files

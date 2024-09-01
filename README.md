@@ -121,3 +121,19 @@ This project is designed to manage patient sessions in a psychologist's clinic, 
 - `GET /generateSummary`: Generate and update the session summary.
 
 ## Project Structure
+anxiety-detection-system/
+│
+├── backend/
+│   ├── api_test.py             # Main FastAPI backend code
+│   ├── model.py                # Pydantic models for database entities
+│   ├── requirements.txt        # Python dependencies
+│   ├── .env                    # Environment variables (not included in the repo)
+│   └── …                     # Other backend files
+│
+└── frontend/
+├── src/
+│   ├── components/
+│   │   └── NewSession.js   # NewSession React component
+│   └── …                 # Other frontend files
+├── package.json            # Node.js dependencies
+└── …                     # Other frontend files
